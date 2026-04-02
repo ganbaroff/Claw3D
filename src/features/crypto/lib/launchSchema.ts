@@ -60,6 +60,7 @@ export const cryptoLaunchSubmitSchema = z
   .object({
     launchId: z.string().trim().min(1),
     executionMode: z.enum(["user_approved", "server_side"]),
+    submitToken: z.string().trim().min(1),
     signedTransaction: z.string().trim().optional(),
   })
   .superRefine((payload, ctx) => {

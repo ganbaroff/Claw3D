@@ -1,12 +1,18 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { cryptoLaunchSubmitSchema } from "@/features/crypto/lib/launchSchema";
+import { getLaunchRequestContext } from "@/features/crypto/server/launch/security";
 import { submitCryptoLaunch } from "@/features/crypto/server/launch/service";
 
-export async function POST(request: Request) {
+export const runtime = "nodejs";
+
+export async function POST(request: NextRequest) {
   try {
     const payload = cryptoLaunchSubmitSchema.parse(await request.json());
-    const result = await submitCryptoLaunch(payload);
+    const result = await submitCryptoLaunch({
+      ...payload,
+      requestContext: getLaunchRequestContext(request),
+    });
     return NextResponse.json({ result });
   } catch (error) {
     if (error instanceof ZodError) {
@@ -17,6 +23,15 @@ export async function POST(request: Request) {
         },
         { status: 400 },
       );
+    }
+    if (error instanceof Error && /too many launch requests/i.test(error.message)) {
+      return NextResponse.json({ error: error.message }, { status: 429 });
+    }
+    if (
+      error instanceof Error &&
+      /(session|disabled|invalid|submit token|deprecated|operator)/i.test(error.message)
+    ) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
     }
     return NextResponse.json(
       {

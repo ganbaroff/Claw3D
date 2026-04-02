@@ -201,6 +201,7 @@ export type CryptoLaunchPrepared = {
   explorerTokenUrl: string;
   explorerTxUrl: string | null;
   expiresAt: number;
+  submitToken: string;
   serializedTransaction: string | null;
   status: "awaiting_signature" | "ready_for_server_submit";
 };

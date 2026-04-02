@@ -14,6 +14,22 @@ import type {
   CryptoLaunchPrepared,
   CryptoLaunchResult,
 } from "@/features/crypto/types";
+import type { LaunchRequestContext } from "@/features/crypto/server/launch/security";
+import {
+  assertServerSideLaunchAuthorized,
+  enforceLaunchPrepareRateLimit,
+  enforceLaunchSubmitRateLimit,
+  fetchLogoBlob,
+} from "@/features/crypto/server/launch/security";
+import {
+  appendLaunchAuditEntry,
+  createLaunchSubmitToken,
+  deletePreparedLaunch,
+  getPreparedLaunch,
+  hashLaunchSubmitToken,
+  pruneExpiredPreparedLaunches,
+  savePreparedLaunch,
+} from "@/features/crypto/server/launch/store";
 
 const PUMP_IPFS_ENDPOINT = "https://pump.fun/api/ipfs";
 const PREPARED_LAUNCH_TTL_MS = 5 * 60 * 1000;
@@ -24,16 +40,6 @@ type NetworkPreset = {
   explorerBaseUrl: string;
   explorerCluster: string | null;
 };
-
-type PreparedLaunchContext = {
-  prepared: CryptoLaunchPrepared;
-  draft: CryptoLaunchDraft;
-  serializedTransaction: string;
-  blockhash: string;
-  lastValidBlockHeight: number;
-};
-
-const preparedLaunches = new Map<string, PreparedLaunchContext>();
 
 let cachedPumpSdk:
   | {
@@ -140,11 +146,9 @@ async function uploadMetadata(draft: CryptoLaunchDraft): Promise<string> {
     const ext = mimeType === "image/png" ? "png" : "jpg";
     formData.append("file", blob, `token-logo.${ext}`);
   } else if (draft.logoUrl) {
-    const imageResponse = await fetch(draft.logoUrl);
-    if (!imageResponse.ok) {
-      throw new Error(`Failed to fetch the token logo from ${draft.logoUrl}.`);
-    }
-    formData.append("file", await imageResponse.blob(), "token-logo.png");
+    const logo = await fetchLogoBlob(draft.logoUrl);
+    const ext = logo.mimeType === "image/png" ? "png" : logo.mimeType === "image/webp" ? "webp" : "jpg";
+    formData.append("file", logo.blob, `token-logo.${ext}`);
   }
   formData.append("name", draft.name);
   formData.append("symbol", draft.symbol);
@@ -194,15 +198,6 @@ function deserializeTransaction(serialized: string): VersionedTransaction {
   return VersionedTransaction.deserialize(Buffer.from(serialized, "base64"));
 }
 
-function pruneExpiredLaunches() {
-  const now = Date.now();
-  for (const [launchId, context] of preparedLaunches.entries()) {
-    if (context.prepared.expiresAt <= now) {
-      preparedLaunches.delete(launchId);
-    }
-  }
-}
-
 function resolveCreatorPublicKey(params: {
   draft: CryptoLaunchDraft;
   creatorPublicKey?: string;
@@ -220,6 +215,7 @@ function buildPreparedLaunch(params: {
   mintAddress: string;
   metadataUri: string;
   serializedTransaction: string;
+  submitToken: string;
   expiresAt: number;
 }): CryptoLaunchPrepared {
   const preset = getNetworkPreset(params.draft.network);
@@ -240,6 +236,7 @@ function buildPreparedLaunch(params: {
     ),
     explorerTxUrl: null,
     expiresAt: params.expiresAt,
+    submitToken: params.submitToken,
     serializedTransaction:
       params.draft.executionMode === "user_approved" ? params.serializedTransaction : null,
     status:
@@ -252,134 +249,223 @@ function buildPreparedLaunch(params: {
 export async function prepareCryptoLaunch(params: {
   draft: CryptoLaunchDraft;
   creatorPublicKey?: string;
+  requestContext: LaunchRequestContext;
 }): Promise<CryptoLaunchPrepared> {
-  pruneExpiredLaunches();
-  const creator = resolveCreatorPublicKey(params);
-  const metadataUri = await uploadMetadata(params.draft);
-  const connection = new Connection(getNetworkPreset(params.draft.network).rpcUrl, "confirmed");
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-  const mintKeypair = Keypair.generate();
-  const sdk = await getPumpSdk();
-  const instructions = [
-    ComputeBudgetProgram.setComputeUnitLimit({
-      units: params.draft.computeUnitLimit,
-    }),
-    ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: Math.max(0, Math.round(params.draft.priorityFeeSol * 1_000_000_000)),
-    }),
-    await sdk.createV2Instruction({
-      mint: mintKeypair.publicKey,
-      name: params.draft.name,
-      symbol: params.draft.symbol,
-      uri: metadataUri,
-      creator,
-      user: creator,
-      mayhemMode: false,
-      cashback: false,
-    }),
-    await sdk.extendAccountInstruction({
-      account: bondingCurvePda(mintKeypair.publicKey),
-      user: creator,
-    }),
-  ];
+  try {
+    pruneExpiredPreparedLaunches();
+    enforceLaunchPrepareRateLimit(params.requestContext);
+    if (params.draft.executionMode === "server_side") {
+      assertServerSideLaunchAuthorized(params.requestContext);
+    }
+    const creator = resolveCreatorPublicKey(params);
+    const metadataUri = await uploadMetadata(params.draft);
+    const connection = new Connection(getNetworkPreset(params.draft.network).rpcUrl, "confirmed");
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+    const mintKeypair = Keypair.generate();
+    const sdk = await getPumpSdk();
+    const instructions = [
+      ComputeBudgetProgram.setComputeUnitLimit({
+        units: params.draft.computeUnitLimit,
+      }),
+      ComputeBudgetProgram.setComputeUnitPrice({
+        microLamports: Math.max(0, Math.round(params.draft.priorityFeeSol * 1_000_000_000)),
+      }),
+      await sdk.createV2Instruction({
+        mint: mintKeypair.publicKey,
+        name: params.draft.name,
+        symbol: params.draft.symbol,
+        uri: metadataUri,
+        creator,
+        user: creator,
+        mayhemMode: false,
+        cashback: false,
+      }),
+      await sdk.extendAccountInstruction({
+        account: bondingCurvePda(mintKeypair.publicKey),
+        user: creator,
+      }),
+    ];
 
-  const transaction = new VersionedTransaction(
-    new TransactionMessage({
-      payerKey: creator,
-      recentBlockhash: blockhash,
-      instructions,
-    }).compileToV0Message(),
-  );
-  transaction.sign([mintKeypair]);
+    const transaction = new VersionedTransaction(
+      new TransactionMessage({
+        payerKey: creator,
+        recentBlockhash: blockhash,
+        instructions,
+      }).compileToV0Message(),
+    );
+    transaction.sign([mintKeypair]);
 
-  const launchId = randomUUID();
-  const expiresAt = Date.now() + PREPARED_LAUNCH_TTL_MS;
-  const serializedTransaction = serializeTransaction(transaction);
-  const prepared = buildPreparedLaunch({
-    launchId,
-    draft: params.draft,
-    creatorPublicKey: creator.toBase58(),
-    mintAddress: mintKeypair.publicKey.toBase58(),
-    metadataUri,
-    serializedTransaction,
-    expiresAt,
-  });
+    const launchId = randomUUID();
+    const submitToken = createLaunchSubmitToken();
+    const expiresAt = Date.now() + PREPARED_LAUNCH_TTL_MS;
+    const serializedTransaction = serializeTransaction(transaction);
+    const prepared = buildPreparedLaunch({
+      launchId,
+      draft: params.draft,
+      creatorPublicKey: creator.toBase58(),
+      mintAddress: mintKeypair.publicKey.toBase58(),
+      metadataUri,
+      serializedTransaction,
+      submitToken,
+      expiresAt,
+    });
 
-  preparedLaunches.set(launchId, {
-    prepared,
-    draft: params.draft,
-    serializedTransaction,
-    blockhash,
-    lastValidBlockHeight,
-  });
-
-  return prepared;
+    savePreparedLaunch({
+      prepared,
+      draft: params.draft,
+      serializedTransaction,
+      blockhash,
+      lastValidBlockHeight,
+      submitTokenHash: hashLaunchSubmitToken(submitToken),
+      createdAt: new Date().toISOString(),
+      requestIp: params.requestContext.requestIp,
+      userAgent: params.requestContext.userAgent,
+    });
+    appendLaunchAuditEntry({
+      at: new Date().toISOString(),
+      type: "prepare_succeeded",
+      launchId,
+      network: params.draft.network,
+      executionMode: params.draft.executionMode,
+      creatorPublicKey: creator.toBase58(),
+      mintAddress: mintKeypair.publicKey.toBase58(),
+      requestIp: params.requestContext.requestIp,
+      userAgent: params.requestContext.userAgent,
+      note: null,
+    });
+    return prepared;
+  } catch (error) {
+    appendLaunchAuditEntry({
+      at: new Date().toISOString(),
+      type:
+        /too many launch requests/i.test(error instanceof Error ? error.message : "")
+          ? "rate_limited"
+          : 
+        params.draft.executionMode === "server_side" &&
+        /disabled|session|required|operator|deprecated/i.test(
+          error instanceof Error ? error.message : "",
+        )
+          ? "server_mode_denied"
+          : "prepare_failed",
+      launchId: null,
+      network: params.draft.network,
+      executionMode: params.draft.executionMode,
+      creatorPublicKey: params.creatorPublicKey?.trim() || null,
+      mintAddress: null,
+      requestIp: params.requestContext.requestIp,
+      userAgent: params.requestContext.userAgent,
+      note: error instanceof Error ? error.message : "Unknown prepare failure.",
+    });
+    throw error;
+  }
 }
 
 export async function submitCryptoLaunch(params: {
   launchId: string;
   executionMode: CryptoLaunchExecutionMode;
+  submitToken: string;
   signedTransaction?: string;
+  requestContext: LaunchRequestContext;
 }): Promise<CryptoLaunchResult> {
-  pruneExpiredLaunches();
-  const context = preparedLaunches.get(params.launchId);
-  if (!context) {
-    throw new Error("Prepared launch was not found or has expired. Please prepare it again.");
-  }
-  if (context.draft.executionMode !== params.executionMode) {
-    throw new Error("Launch execution mode does not match the prepared request.");
-  }
+  let context = getPreparedLaunch(params.launchId);
+  try {
+    pruneExpiredPreparedLaunches();
+    enforceLaunchSubmitRateLimit(params.requestContext);
+    context = getPreparedLaunch(params.launchId);
+    if (!context) {
+      throw new Error("Prepared launch was not found or has expired. Please prepare it again.");
+    }
+    if (context.draft.executionMode !== params.executionMode) {
+      throw new Error("Launch execution mode does not match the prepared request.");
+    }
+    if (context.submitTokenHash !== hashLaunchSubmitToken(params.submitToken)) {
+      throw new Error("Launch submit token is invalid or has expired.");
+    }
+    if (params.executionMode === "server_side") {
+      assertServerSideLaunchAuthorized(params.requestContext);
+    }
 
-  const preset = getNetworkPreset(context.draft.network);
-  const connection = new Connection(preset.rpcUrl, "confirmed");
-  const transaction =
-    params.executionMode === "server_side"
-      ? deserializeTransaction(context.serializedTransaction)
-      : deserializeTransaction(params.signedTransaction!.trim());
+    const preset = getNetworkPreset(context.draft.network);
+    const connection = new Connection(preset.rpcUrl, "confirmed");
+    const transaction =
+      params.executionMode === "server_side"
+        ? deserializeTransaction(context.serializedTransaction)
+        : deserializeTransaction(params.signedTransaction!.trim());
 
-  if (params.executionMode === "server_side") {
-    transaction.sign([getServerSigner()]);
-  }
+    if (params.executionMode === "server_side") {
+      transaction.sign([getServerSigner()]);
+    }
 
-  const signature = await connection.sendRawTransaction(transaction.serialize(), {
-    skipPreflight: false,
-    maxRetries: 3,
-  });
-  const confirmation = await connection.confirmTransaction(
-    {
+    const signature = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: false,
+      maxRetries: 3,
+    });
+    const confirmation = await connection.confirmTransaction(
+      {
+        signature,
+        blockhash: context.blockhash,
+        lastValidBlockHeight: context.lastValidBlockHeight,
+      },
+      "confirmed",
+    );
+    if (confirmation.value.err) {
+      throw new Error(`Launch transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+    }
+
+    const result: CryptoLaunchResult = {
+      launchId: context.prepared.launchId,
+      network: context.prepared.network,
+      executionMode: context.prepared.executionMode,
+      mintAddress: context.prepared.mintAddress,
+      creatorPublicKey: context.prepared.creatorPublicKey,
+      metadataUri: context.prepared.metadataUri,
       signature,
-      blockhash: context.blockhash,
-      lastValidBlockHeight: context.lastValidBlockHeight,
-    },
-    "confirmed",
-  );
-  if (confirmation.value.err) {
-    throw new Error(`Launch transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+      explorerBaseUrl: context.prepared.explorerBaseUrl,
+      explorerCluster: context.prepared.explorerCluster,
+      explorerTokenUrl: context.prepared.explorerTokenUrl,
+      explorerTxUrl: buildExplorerUrl(
+        context.prepared.explorerBaseUrl,
+        "tx",
+        signature,
+        context.prepared.explorerCluster,
+      ),
+      confirmed: true,
+      submittedAt: new Date().toISOString(),
+    };
+
+    deletePreparedLaunch(params.launchId);
+    appendLaunchAuditEntry({
+      at: result.submittedAt,
+      type: "submit_succeeded",
+      launchId: params.launchId,
+      network: result.network,
+      executionMode: result.executionMode,
+      creatorPublicKey: result.creatorPublicKey,
+      mintAddress: result.mintAddress,
+      requestIp: params.requestContext.requestIp,
+      userAgent: params.requestContext.userAgent,
+      note: result.signature,
+    });
+    return result;
+  } catch (error) {
+    const failedContext = context;
+    appendLaunchAuditEntry({
+      at: new Date().toISOString(),
+      type:
+        /too many launch requests/i.test(error instanceof Error ? error.message : "")
+          ? "rate_limited"
+          : "submit_failed",
+      launchId: params.launchId,
+      network: failedContext?.draft.network ?? null,
+      executionMode: failedContext?.draft.executionMode ?? null,
+      creatorPublicKey: failedContext?.prepared.creatorPublicKey ?? null,
+      mintAddress: failedContext?.prepared.mintAddress ?? null,
+      requestIp: params.requestContext.requestIp,
+      userAgent: params.requestContext.userAgent,
+      note: error instanceof Error ? error.message : "Unknown submit failure.",
+    });
+    throw error;
   }
-
-  const result: CryptoLaunchResult = {
-    launchId: context.prepared.launchId,
-    network: context.prepared.network,
-    executionMode: context.prepared.executionMode,
-    mintAddress: context.prepared.mintAddress,
-    creatorPublicKey: context.prepared.creatorPublicKey,
-    metadataUri: context.prepared.metadataUri,
-    signature,
-    explorerBaseUrl: context.prepared.explorerBaseUrl,
-    explorerCluster: context.prepared.explorerCluster,
-    explorerTokenUrl: context.prepared.explorerTokenUrl,
-    explorerTxUrl: buildExplorerUrl(
-      context.prepared.explorerBaseUrl,
-      "tx",
-      signature,
-      context.prepared.explorerCluster,
-    ),
-    confirmed: true,
-    submittedAt: new Date().toISOString(),
-  };
-
-  preparedLaunches.delete(params.launchId);
-  return result;
 }
 
 export async function fetchJitoTipFloor() {

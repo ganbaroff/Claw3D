@@ -255,6 +255,24 @@ export async function maybeHandleCryptoLaunchChat(params: {
 
   const awaitingField = existing.conversation.awaitingField ?? QUESTION_ORDER[0];
   if (awaitingField === "confirm") {
+    if (existing.draft.executionMode === "server_side") {
+      persistState({
+        ...existing,
+        conversation: {
+          ...existing.conversation,
+          active: false,
+          agentId: null,
+          awaitingField: null,
+          lastUpdatedAt: Date.now(),
+        },
+      });
+      appendAssistant(
+        params.dispatch,
+        params.agentId,
+        "Server-side launches now require an authenticated operator session from the crypto room Launch tab. I saved the draft there for manual review and submission.",
+      );
+      return true;
+    }
     if (wantsOpenRoom(trimmed)) {
       persistState({
         ...existing,

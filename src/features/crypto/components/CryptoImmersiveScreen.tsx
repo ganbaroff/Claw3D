@@ -19,6 +19,11 @@ import {
 } from "@/features/crypto/lib/constants";
 import { useCryptoRoomState } from "@/features/crypto/hooks/useCryptoRoomState";
 import { useCryptoLaunchState } from "@/features/crypto/hooks/useCryptoLaunchState";
+import {
+  getServerLaunchSessionStatus,
+  loginServerLaunchSession,
+  logoutServerLaunchSession,
+} from "@/features/crypto/lib/launchClient";
 import { getLaunchFieldLabel, getMissingRequiredLaunchField } from "@/features/crypto/lib/launchSchema";
 import type { CryptoAgentTradeMode, CryptoTrackedPair } from "@/features/crypto/types";
 import type { OfficeAgent } from "@/features/retro-office/core/types";
@@ -651,10 +656,28 @@ function LaunchTab({
 }) {
   const [tipFloor, setTipFloor] = useState<number | null>(null);
   const [tipFloorError, setTipFloorError] = useState<string | null>(null);
+  const [operatorPassword, setOperatorPassword] = useState("");
+  const [serverSessionAuthenticated, setServerSessionAuthenticated] = useState(false);
+  const [serverSessionBusy, setServerSessionBusy] = useState(false);
+  const [serverSessionError, setServerSessionError] = useState<string | null>(null);
+  const serverModeEnabled =
+    process.env.NEXT_PUBLIC_CRYPTO_LAUNCH_SERVER_MODE_ENABLED === "true";
+  const effectiveServerSessionAuthenticated =
+    serverModeEnabled && serverSessionAuthenticated;
+  const effectiveServerSessionError = serverModeEnabled ? serverSessionError : null;
+  const serverModeUnavailableSelection =
+    !serverModeEnabled && launch.draft.executionMode === "server_side";
   const missingField = getMissingRequiredLaunchField(launch.draft);
   const effectiveTipFloor = launch.draft.network === "mainnet" ? tipFloor : null;
   const effectiveTipFloorError =
     launch.draft.network === "mainnet" ? tipFloorError : null;
+  const requiresServerOperatorSession =
+    serverModeEnabled && launch.draft.executionMode === "server_side";
+  const launchDisabled =
+    launch.launchBusy ||
+    Boolean(missingField) ||
+    serverModeUnavailableSelection ||
+    (requiresServerOperatorSession && !effectiveServerSessionAuthenticated);
 
   useEffect(() => {
     if (launch.draft.network !== "mainnet") {
@@ -686,6 +709,29 @@ function LaunchTab({
     };
   }, [launch.draft.network]);
 
+  useEffect(() => {
+    if (!serverModeEnabled) return;
+    let cancelled = false;
+    void getServerLaunchSessionStatus()
+      .then((authenticated) => {
+        if (!cancelled) {
+          setServerSessionAuthenticated(authenticated);
+          setServerSessionError(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setServerSessionAuthenticated(false);
+          setServerSessionError(
+            error instanceof Error ? error.message : "Unable to verify the launch operator session.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [serverModeEnabled]);
+
   return (
     <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.15fr)_420px]">
       <SectionCard
@@ -706,7 +752,7 @@ function LaunchTab({
                 launch.clearLaunchError();
                 void launch.submitLaunch().catch(() => {});
               }}
-              disabled={launch.launchBusy || Boolean(missingField)}
+              disabled={launchDisabled}
               className="rounded-full border border-cyan-300/25 bg-cyan-300/12 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-100 transition-colors hover:bg-cyan-300/16 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {launch.launchBusy ? "Launching" : "Launch token"}
@@ -743,9 +789,98 @@ function LaunchTab({
               className="w-full rounded-2xl border border-white/12 bg-[#071019] px-4 py-3 text-[13px] text-white outline-none transition-colors focus:border-cyan-300/35"
             >
               <option value="user_approved">User-approved wallet</option>
-              <option value="server_side">Server-side signer</option>
+              <option value="server_side" disabled={!serverModeEnabled}>
+                Server-side signer
+              </option>
             </select>
           </LabeledField>
+          {!serverModeEnabled ? (
+            <LabeledField label="Server-side mode">
+              <div className="rounded-[18px] border border-white/10 bg-white/[0.04] px-4 py-3 text-[13px] leading-6 text-white/74">
+                Disabled for this frontend build. Set
+                {" "}
+                `NEXT_PUBLIC_CRYPTO_LAUNCH_SERVER_MODE_ENABLED=true`
+                {" "}
+                after the server-side path is configured.
+              </div>
+            </LabeledField>
+          ) : null}
+          {serverModeEnabled ? (
+            <LabeledField label="Server launch operator session">
+              <div className="space-y-3 rounded-[18px] border border-amber-400/18 bg-[#071019] p-4">
+                <div className="text-[12px] leading-6 text-white/70">
+                  {effectiveServerSessionAuthenticated
+                    ? "Authenticated. Server-side launches can use the protected server signer from this browser session."
+                    : "Sign in with the launch operator password to unlock server-side launches."}
+                </div>
+                {!effectiveServerSessionAuthenticated ? (
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <input
+                      type="password"
+                      value={operatorPassword}
+                      onChange={(event) => setOperatorPassword(event.target.value)}
+                      className="min-w-0 flex-1 rounded-2xl border border-amber-400/18 bg-black/20 px-4 py-3 text-[13px] text-white outline-none transition-colors placeholder:text-white/30 focus:border-amber-300/35"
+                      placeholder="Launch operator password"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setServerSessionBusy(true);
+                        setServerSessionError(null);
+                        void loginServerLaunchSession(operatorPassword)
+                          .then((authenticated) => {
+                            setServerSessionAuthenticated(authenticated);
+                            setOperatorPassword("");
+                          })
+                          .catch((error) => {
+                            setServerSessionAuthenticated(false);
+                            setServerSessionError(
+                              error instanceof Error
+                                ? error.message
+                                : "Unable to authenticate the launch operator session.",
+                            );
+                          })
+                          .finally(() => setServerSessionBusy(false));
+                      }}
+                      disabled={serverSessionBusy || !operatorPassword.trim()}
+                      className="rounded-full border border-amber-300/25 bg-amber-300/12 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-100 transition-colors hover:bg-amber-300/16 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {serverSessionBusy ? "Signing in" : "Unlock"}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[12px] uppercase tracking-[0.16em] text-emerald-200/85">
+                      Operator session active
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setServerSessionBusy(true);
+                        setServerSessionError(null);
+                        void logoutServerLaunchSession()
+                          .then(() => {
+                            setServerSessionAuthenticated(false);
+                          })
+                          .catch((error) => {
+                            setServerSessionError(
+                              error instanceof Error
+                                ? error.message
+                                : "Unable to clear the launch operator session.",
+                            );
+                          })
+                          .finally(() => setServerSessionBusy(false));
+                      }}
+                      disabled={serverSessionBusy}
+                      className="rounded-full border border-white/12 bg-white/6 px-4 py-2 text-[11px] uppercase tracking-[0.18em] text-white/75 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {serverSessionBusy ? "Working" : "Lock"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </LabeledField>
+          ) : null}
           <LabeledField label="Token name">
             <input
               value={launch.draft.name}
@@ -913,11 +1048,23 @@ function LaunchTab({
               <Banner tone="neutral">
                 Wallet-approved launches will connect to Phantom, prepare the Pump.fun transaction, and ask for an explicit signature before submission.
               </Banner>
+            ) : serverModeUnavailableSelection ? (
+              <Banner tone="danger">
+                Server-side mode is not enabled for this frontend build, so this draft cannot be launched until that flag is turned on or you switch back to user-approved mode.
+              </Banner>
             ) : (
               <Banner tone="danger">
-                Server-side launches require `PUMPFUN_SERVER_SECRET_KEY` on the server and will use that wallet as the token creator.
+                Server-side launches require `CRYPTO_LAUNCH_SERVER_MODE_ENABLED=true`, `PUMPFUN_SERVER_SECRET_KEY`, and an authenticated operator session before submission.
               </Banner>
             )}
+            {requiresServerOperatorSession && !effectiveServerSessionAuthenticated ? (
+              <Banner tone="danger">
+                Authenticate the launch operator session before you submit a server-side launch.
+              </Banner>
+            ) : null}
+            {effectiveServerSessionError ? (
+              <Banner tone="danger">{effectiveServerSessionError}</Banner>
+            ) : null}
             {launch.draft.network === "mainnet" ? (
               effectiveTipFloor !== null ? (
                 <Banner tone="neutral">

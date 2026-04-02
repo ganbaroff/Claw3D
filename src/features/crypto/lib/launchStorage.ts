@@ -72,10 +72,27 @@ const emitCryptoLaunchUpdate = () => {
   window.dispatchEvent(new CustomEvent(CRYPTO_LAUNCH_EVENT));
 };
 
+const sanitizePreparedForStorage = (
+  prepared: CryptoLaunchPrepared | null,
+): CryptoLaunchPrepared | null =>
+  prepared
+    ? {
+        ...prepared,
+        submitToken: "",
+        serializedTransaction: null,
+      }
+    : null;
+
 export const saveCryptoLaunchState = (state: CryptoLaunchDraftState) => {
   if (!canUseDom()) return;
   try {
-    window.localStorage.setItem(CRYPTO_LAUNCH_STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.setItem(
+      CRYPTO_LAUNCH_STORAGE_KEY,
+      JSON.stringify({
+        ...state,
+        lastPrepared: sanitizePreparedForStorage(state.lastPrepared),
+      } satisfies CryptoLaunchDraftState),
+    );
     emitCryptoLaunchUpdate();
   } catch {
     /* ignore */

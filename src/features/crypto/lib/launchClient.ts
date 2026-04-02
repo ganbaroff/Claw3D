@@ -15,7 +15,12 @@ function serializeSignedTransaction(bytes: Uint8Array): string {
 
 async function readJson(response: Response) {
   const payload = (await response.json().catch(() => null)) as
-    | { error?: string; prepared?: CryptoLaunchPrepared; result?: CryptoLaunchResult }
+    | {
+        error?: string;
+        prepared?: CryptoLaunchPrepared;
+        result?: CryptoLaunchResult;
+        authenticated?: boolean;
+      }
     | null;
   if (!response.ok) {
     throw new Error(payload?.error?.trim() || `Request failed with status ${response.status}.`);
@@ -67,6 +72,7 @@ export async function prepareCryptoLaunch(
 export async function submitCryptoLaunch(params: {
   launchId: string;
   executionMode: CryptoLaunchDraft["executionMode"];
+  submitToken: string;
   signedTransaction?: string;
 }): Promise<CryptoLaunchResult> {
   const response = await fetch("/api/crypto/launch/submit", {
@@ -121,6 +127,7 @@ export async function executeWalletApprovedLaunch(
   const result = await submitCryptoLaunch({
     launchId: prepared.launchId,
     executionMode: "user_approved",
+    submitToken: prepared.submitToken,
     signedTransaction: serializeSignedTransaction(signed.serialize()),
   });
   return { prepared, result, creatorPublicKey };
@@ -133,6 +140,33 @@ export async function executeServerSideLaunch(
   const result = await submitCryptoLaunch({
     launchId: prepared.launchId,
     executionMode: "server_side",
+    submitToken: prepared.submitToken,
   });
   return { prepared, result };
+}
+
+export async function getServerLaunchSessionStatus(): Promise<boolean> {
+  const response = await fetch("/api/crypto/launch/session", {
+    method: "GET",
+    cache: "no-store",
+  });
+  const payload = await readJson(response);
+  return Boolean(payload?.authenticated);
+}
+
+export async function loginServerLaunchSession(password: string): Promise<boolean> {
+  const response = await fetch("/api/crypto/launch/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  const payload = await readJson(response);
+  return Boolean(payload?.authenticated);
+}
+
+export async function logoutServerLaunchSession(): Promise<void> {
+  const response = await fetch("/api/crypto/launch/session", {
+    method: "DELETE",
+  });
+  await readJson(response);
 }
