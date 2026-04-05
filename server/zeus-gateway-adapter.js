@@ -821,47 +821,46 @@ async function handleMethod(method, params, id, sendEvent) {
     case "wake":
       return resOk(id, { ok: true });
 
-    // ─── Autonomous mode — read kanban, assign tasks to agents ─────────────────
+    // ─── Autonomous mode — each agent audits their domain, finds and fixes own issues ──
     case "swarm.auto": {
-      const kanbanPath = path.join(__dirname, "..", "memory", "cto-kanban.md");
-      let kanban = "";
-      try { kanban = fs.readFileSync(kanbanPath, "utf8"); } catch { /* no kanban */ }
+      // Agents that do proactive domain audits (not all 39 — core squad only)
+      const auditSquad = [
+        { agentId: "security-agent",   zone: "Проаудируй все API эндпоинты: кто использует SupabaseAdmin/service role key там где должен быть user JWT. Проверь Railway env vars — нет ли лишних открытых секретов. Проверь CORS настройки gateway. Найди всё что может стать уязвимостью." },
+        { agentId: "architecture-agent", zone: "Проаудируй связь gateway↔офис↔v0Laura. Найди: мёртвый код, неоптимальные конфиги, проблемы в Dockerfile.gateway, что может сломаться при масштабировании. Проверь что swarm.auto и swarm.run работают корректно." },
+        { agentId: "product-agent",    zone: "Проаудируй UX офиса с точки зрения пользователя. Что непонятно при первом открытии? Что создаёт трение при общении с агентами? Что обещает интерфейс но не даёт? Конкретные экраны и компоненты." },
+      ];
 
-      // Extract "В РАБОТЕ" tasks with assigned agents
-      const inProgressMatch = kanban.match(/## 🟡 В РАБОТЕ[\s\S]*?(?=##)/);
-      const inProgressBlock = inProgressMatch ? inProgressMatch[0] : "";
-      const taskRows = [...inProgressBlock.matchAll(/\|\s*(Z-\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|/g)];
+      const runId = `auto-${Date.now()}`;
+      sendEvent({ type: "event", event: "swarm", payload: { state: "auto_started", agents: auditSquad.map(a => a.agentId), runId } });
 
-      if (taskRows.length === 0) {
-        return resOk(id, { message: "Канбан пустой — нет тасков в работе.", tasks: [] });
-      }
+      const results = await Promise.all(auditSquad.map(async ({ agentId, zone }) => {
+        const agent = agents.get(agentId);
+        if (!agent) return { agentId, error: "not found" };
 
-      const tasks = taskRows.map(r => ({
-        id: r[1].trim(),
-        description: r[2].trim(),
-        agent: r[3].trim().replace("-agent", "") + "-agent",
-        status: r[4].trim(),
-      })).filter(t => t.status !== "Готово" && t.status !== "Done");
+        sendEvent({ type: "event", event: "swarm", payload: { state: "agent_started", agentName: agent.name, runId } });
 
-      sendEvent({ type: "event", event: "swarm", payload: { state: "auto_started", tasks: tasks.map(t => t.id) } });
-
-      // Run each task with its assigned agent
-      const results = await Promise.all(tasks.map(async (task) => {
-        const agent = agents.get(task.agent) || [...agents.values()][0];
-        if (!agent) return { taskId: task.id, error: "agent not found" };
-
-        sendEvent({ type: "event", event: "swarm", payload: { state: "agent_started", agentName: agent.name, taskId: task.id } });
-
-        const sessionKey = `auto:${task.id}:${Date.now()}`;
-        const prompt = `АВТОНОМНЫЙ ТАСК ${task.id}: ${task.description}\n\nЭто автономная задача — CEO сейчас не доступен. Исследуй проблему, предложи конкретное решение: какие файлы, какие строки, что менять. Не деплоишь самостоятельно — только анализируешь и документируешь вывод.`;
+        const sessionKey = `auto:${agentId}:${runId}`;
+        const prompt = `АВТОНОМНЫЙ АУДИТ — CEO не доступен, работаешь самостоятельно.\n\nТвоя зона: ${zone}\n\nЧто сделать:\n1. Найди все проблемы в своей зоне (конкретно: файл, строка, поведение)\n2. Для каждой проблемы — предложи готовое решение\n3. Расставь приоритеты P0/P1/P2\n4. Если проблема требует деплоя — опиши точно что менять, CEO задеплоит\n\nНе останавливайся на "всё хорошо" — копай глубже. Нет идеального кода.`;
 
         try {
           const reply = await callClaude(agent, sessionKey, prompt, () => {}, sessionKey);
           const clean = visibleContent(reply) || reply;
-          sendEvent({ type: "event", event: "swarm", payload: { state: "agent_done", agentName: agent.name, taskId: task.id } });
-          return { taskId: task.id, agent: agent.name, result: clean };
+
+          // Save findings to disk
+          const findingsDir = path.join(__dirname, "..", "memory", "agent-findings");
+          try {
+            fs.mkdirSync(findingsDir, { recursive: true });
+            const date = new Date().toISOString().slice(0, 10);
+            fs.writeFileSync(
+              path.join(findingsDir, `${date}-${agentId}.md`),
+              `# Автономный аудит: ${agent.name}\n**Дата:** ${date}\n\n${clean}`
+            );
+          } catch { /* disk write failed, non-fatal */ }
+
+          sendEvent({ type: "event", event: "swarm", payload: { state: "agent_done", agentName: agent.name, runId } });
+          return { agentId, agent: agent.name, result: clean };
         } catch (e) {
-          return { taskId: task.id, agent: agent.name, error: e.message };
+          return { agentId, agent: agent.name, error: e.message };
         }
       }));
 
