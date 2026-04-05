@@ -809,6 +809,54 @@ async function handleMethod(method, params, id, sendEvent) {
     case "wake":
       return resOk(id, { ok: true });
 
+    // ─── Autonomous mode — read kanban, assign tasks to agents ─────────────────
+    case "swarm.auto": {
+      const kanbanPath = path.join(__dirname, "..", "memory", "cto-kanban.md");
+      let kanban = "";
+      try { kanban = fs.readFileSync(kanbanPath, "utf8"); } catch { /* no kanban */ }
+
+      // Extract "В РАБОТЕ" tasks with assigned agents
+      const inProgressMatch = kanban.match(/## 🟡 В РАБОТЕ[\s\S]*?(?=##)/);
+      const inProgressBlock = inProgressMatch ? inProgressMatch[0] : "";
+      const taskRows = [...inProgressBlock.matchAll(/\|\s*(Z-\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|/g)];
+
+      if (taskRows.length === 0) {
+        return resOk(id, { message: "Канбан пустой — нет тасков в работе.", tasks: [] });
+      }
+
+      const tasks = taskRows.map(r => ({
+        id: r[1].trim(),
+        description: r[2].trim(),
+        agent: r[3].trim().replace("-agent", "") + "-agent",
+        status: r[4].trim(),
+      })).filter(t => t.status !== "Готово" && t.status !== "Done");
+
+      sendEvent({ type: "event", event: "swarm", payload: { state: "auto_started", tasks: tasks.map(t => t.id) } });
+
+      // Run each task with its assigned agent
+      const results = await Promise.all(tasks.map(async (task) => {
+        const agent = agents.get(task.agent) || [...agents.values()][0];
+        if (!agent) return { taskId: task.id, error: "agent not found" };
+
+        sendEvent({ type: "event", event: "swarm", payload: { state: "agent_started", agentName: agent.name, taskId: task.id } });
+
+        const sessionKey = `auto:${task.id}:${Date.now()}`;
+        const prompt = `АВТОНОМНЫЙ ТАСК ${task.id}: ${task.description}\n\nЭто автономная задача — CEO сейчас не доступен. Исследуй проблему, предложи конкретное решение: какие файлы, какие строки, что менять. Не деплоишь самостоятельно — только анализируешь и документируешь вывод.`;
+
+        try {
+          const reply = await callClaude(agent, sessionKey, prompt, () => {}, sessionKey);
+          const clean = visibleContent(reply) || reply;
+          sendEvent({ type: "event", event: "swarm", payload: { state: "agent_done", agentName: agent.name, taskId: task.id } });
+          return { taskId: task.id, agent: agent.name, result: clean };
+        } catch (e) {
+          return { taskId: task.id, agent: agent.name, error: e.message };
+        }
+      }));
+
+      sendEvent({ type: "event", event: "swarm", payload: { state: "done", results } });
+      return resOk(id, { tasks: tasks.map(t => t.id), results });
+    }
+
     // ─── Swarm coordinator — run task across multiple agents, synthesize ────────
     case "swarm.run": {
       const task = typeof p.task === "string" ? p.task.trim() : "";
