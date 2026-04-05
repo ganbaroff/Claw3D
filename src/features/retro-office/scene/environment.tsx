@@ -593,11 +593,11 @@ export const FloorAndWalls = memo(function FloorAndWalls({
       ) : null}
 
       {[
-        { x: 120, y: -95, width: 1.7, depth: 1.55, height: 2.35, body: "#374151", accent: "#111827", window: "#c4b5fd" },
-        { x: 430, y: -110, width: 1.58, depth: 1.42, height: 2.1, body: "#4b5563", accent: "#1f2937", window: "#bfdbfe" },
-        { x: 880, y: -120, width: 2.2, depth: 1.8, height: 3.25, body: "#334155", accent: "#0f172a", window: "#fde68a" },
-        { x: 1340, y: -108, width: 1.62, depth: 1.48, height: 2.2, body: "#475569", accent: "#1e293b", window: "#93c5fd" },
-        { x: 1670, y: -92, width: 1.74, depth: 1.52, height: 2.55, body: "#3f3f46", accent: "#18181b", window: "#e9d5ff" },
+        { x: 120, y: -35, width: 1.7, depth: 1.55, height: 2.35, body: "#374151", accent: "#111827", window: "#c4b5fd" },
+        { x: 430, y: -46, width: 1.58, depth: 1.42, height: 2.1, body: "#4b5563", accent: "#1f2937", window: "#bfdbfe" },
+        { x: 880, y: -54, width: 2.2, depth: 1.8, height: 3.25, body: "#334155", accent: "#0f172a", window: "#fde68a" },
+        { x: 1340, y: -42, width: 1.62, depth: 1.48, height: 2.2, body: "#475569", accent: "#1e293b", window: "#93c5fd" },
+        { x: 1670, y: -28, width: 1.74, depth: 1.52, height: 2.55, body: "#3f3f46", accent: "#18181b", window: "#e9d5ff" },
       ].map((tower) => {
         const [wx, , wz] = toWorld(tower.x, tower.y);
         return (
@@ -615,10 +615,10 @@ export const FloorAndWalls = memo(function FloorAndWalls({
       })}
 
       {[
-        { x: 260, y: LOCAL_OFFICE_CANVAS_HEIGHT + 40, width: 1.35, depth: 0.98, height: 1.05, body: "#e5c9a8", roof: "#7b5e57", door: "#5d4037", window: "#fef3c7" },
-        { x: 540, y: LOCAL_OFFICE_CANVAS_HEIGHT + 46, width: 1.42, depth: 1.02, height: 1.12, body: "#c4d7b2", roof: "#5f7a61", door: "#39503d", window: "#dcfce7" },
-        { x: 1320, y: LOCAL_OFFICE_CANVAS_HEIGHT + 44, width: 1.4, depth: 1, height: 1.1, body: "#cdb4db", roof: "#6b4f85", door: "#433255", window: "#e9d5ff" },
-        { x: 1580, y: LOCAL_OFFICE_CANVAS_HEIGHT + 40, width: 1.32, depth: 0.96, height: 1.04, body: "#c6d8ef", roof: "#4b5d73", door: "#314152", window: "#dbeafe" },
+        { x: 260, y: LOCAL_OFFICE_CANVAS_HEIGHT + 18, width: 1.35, depth: 0.98, height: 1.05, body: "#e5c9a8", roof: "#7b5e57", door: "#5d4037", window: "#fef3c7" },
+        { x: 540, y: LOCAL_OFFICE_CANVAS_HEIGHT + 20, width: 1.42, depth: 1.02, height: 1.12, body: "#c4d7b2", roof: "#5f7a61", door: "#39503d", window: "#dcfce7" },
+        { x: 1320, y: LOCAL_OFFICE_CANVAS_HEIGHT + 20, width: 1.4, depth: 1, height: 1.1, body: "#cdb4db", roof: "#6b4f85", door: "#433255", window: "#e9d5ff" },
+        { x: 1580, y: LOCAL_OFFICE_CANVAS_HEIGHT + 18, width: 1.32, depth: 0.96, height: 1.04, body: "#c6d8ef", roof: "#4b5d73", door: "#314152", window: "#dbeafe" },
       ].map((house) => {
         const [wx, , wz] = toWorld(house.x, house.y);
         return (
@@ -633,6 +633,82 @@ export const FloorAndWalls = memo(function FloorAndWalls({
             roofColor={house.roof}
             doorColor={house.door}
             windowColor={house.window}
+          />
+        );
+      })}
+
+      {[
+        { x: 220, y: 22, width: 1.55, depth: 0.82, height: 1.08, body: "#7c2d12", awning: "#fb7185", trim: "#fecdd3", window: "#fff7c2" },
+        { x: 520, y: 26, width: 1.7, depth: 0.86, height: 1.14, body: "#334155", awning: "#38bdf8", trim: "#dbeafe", window: "#bfdbfe" },
+        { x: 1280, y: 24, width: 1.62, depth: 0.84, height: 1.1, body: "#3f3f46", awning: "#22c55e", trim: "#dcfce7", window: "#d1fae5" },
+        { x: 1560, y: 20, width: 1.5, depth: 0.8, height: 1.04, body: "#6d4c41", awning: "#f59e0b", trim: "#fde68a", window: "#fef3c7" },
+      ].map((store) => {
+        const [wx, , wz] = toWorld(store.x, store.y);
+        return (
+          <StorefrontBlock
+            key={`north-storefront-${store.x}-${store.y}`}
+            position={[wx, 0, wz]}
+            width={store.width}
+            depth={store.depth}
+            height={store.height}
+            bodyColor={store.body}
+            awningColor={store.awning}
+            trimColor={store.trim}
+            windowColor={store.window}
+          />
+        );
+      })}
+
+      {([
+        { kind: "tower", x: 54, z: -6.2, width: 1.4, depth: 1.28, height: 2.2, body: "#334155", accent: "#0f172a", window: "#93c5fd" },
+        { kind: "store", x: 48, z: -2.6, width: 1.18, depth: 0.76, height: 1.02, body: "#7c2d12", awning: "#f97316", trim: "#fde68a", window: "#fef3c7" },
+        { kind: "house", x: 47.8, z: 2.8, width: 1.02, depth: 0.96, height: 0.98, body: "#d8c3a5", roof: "#8d6e63", door: "#5d4037", window: "#fff7c2" },
+        { kind: "tower", x: -6.4, z: -6.25, width: 1.32, depth: 1.24, height: 2.06, body: "#475569", accent: "#1e293b", window: "#c4b5fd" },
+        { kind: "store", x: -2.2, z: -6.05, width: 1.08, depth: 0.8, height: 1.0, body: "#374151", awning: "#38bdf8", trim: "#dbeafe", window: "#bfdbfe" },
+        { kind: "house", x: 2.4, z: -6.15, width: 1.0, depth: 0.94, height: 0.94, body: "#c4d7b2", roof: "#5f7a61", door: "#39503d", window: "#dcfce7" },
+      ] as const).map((building) => {
+        if (building.kind === "store") {
+          return (
+            <StorefrontBlock
+              key={`perimeter-store-${building.x}-${building.z}`}
+              position={[building.x, 0, building.z]}
+              rotationY={building.x > 0 ? -Math.PI / 2 : Math.PI / 2}
+              width={building.width}
+              depth={building.depth}
+              height={building.height}
+              bodyColor={building.body}
+              awningColor={building.awning}
+              trimColor={building.trim}
+              windowColor={building.window}
+            />
+          );
+        }
+        if (building.kind === "house") {
+          return (
+            <TownhouseBlock
+              key={`perimeter-house-${building.x}-${building.z}`}
+              position={[building.x, 0, building.z]}
+              rotationY={building.z < 0 ? Math.PI : -Math.PI / 2}
+              width={building.width}
+              depth={building.depth}
+              height={building.height}
+              bodyColor={building.body}
+              roofColor={building.roof}
+              doorColor={building.door}
+              windowColor={building.window}
+            />
+          );
+        }
+        return (
+          <TowerBlock
+            key={`perimeter-tower-${building.x}-${building.z}`}
+            position={[building.x, 0, building.z]}
+            width={building.width}
+            depth={building.depth}
+            height={building.height}
+            bodyColor={building.body}
+            accentColor={building.accent}
+            windowColor={building.window}
           />
         );
       })}
