@@ -947,6 +947,12 @@ function startAdapter() {
       return;
     }
 
+    if (req.url === "/health" || req.url === "/healthz") {
+      res.writeHead(200, { "Content-Type": "text/plain", ...cors });
+      res.end("OK");
+      return;
+    }
+
     if (req.url === "/agents" || req.url === "/api/agents") {
       loadAgentState();
       const payload = [...agents.values()].map((agent) => {
