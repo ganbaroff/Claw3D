@@ -19,6 +19,13 @@
 
 ---
 
+## ✅ Z-04 ЗАКРЫТ
+
+gateway: `wss://zeus-gateway-production.up.railway.app`
+офис: `NEXT_PUBLIC_GATEWAY_URL` → wss://zeus-gateway-production.up.railway.app
+
+---
+
 ## 🟢 BACKLOG
 
 | # | Задача | Приоритет |
