@@ -266,6 +266,18 @@ function buildUserPrompt(agentId, contextFiles, userMessage) {
     context += `# Team Context (shared — read this first)\n\`\`\`\n${sharedCtx.slice(0, 8_000)}\n\`\`\`\n\n`;
   }
 
+  // Kanban — what needs to be done
+  try {
+    const kanban = fs.readFileSync(path.join(__dirname, "..", "memory", "cto-kanban.md"), "utf8");
+    context += `# Current Kanban (tasks assigned to you may be here)\n\`\`\`\n${kanban.slice(0, 3_000)}\n\`\`\`\n\n`;
+  } catch { /* no kanban */ }
+
+  // Agile rules — how the team operates
+  try {
+    const rules = fs.readFileSync(path.join(__dirname, "..", "memory", "AGILE-RULES.md"), "utf8");
+    context += `# Team Agile Rules\n\`\`\`\n${rules.slice(0, 3_000)}\n\`\`\`\n\n`;
+  } catch { /* no rules */ }
+
   // Agent-specific files
   const fileEntries = Object.entries(contextFiles);
   if (fileEntries.length > 0) {
