@@ -36,6 +36,10 @@ const OLLAMA_URL   = process.env.OLLAMA_URL   || "http://localhost:11434";
 const NVIDIA_URL   = "https://integrate.api.nvidia.com/v1";
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || "";
 
+// Local Gemma 4 — Google's model, installed via Ollama on user's PC.
+// Used as primary for "fast" agents so NVIDIA rate limits don't block all 37 agents.
+const GEMMA4_MODEL = process.env.GEMMA4_MODEL || "gemma4:latest";
+
 // Keys for each NVIDIA model
 const NIM = {
   fast:          "meta/llama-3.3-70b-instruct",
@@ -47,28 +51,38 @@ const NIM = {
 // Per-agent tier assignment
 // Agents NOT listed here get "local" (qwen3:8b)
 const AGENT_TIER = {
-  // Reasoning tier — using fast (llama-3.3-70b) which handles Russian well.
-  // deepseek-r1-distill-llama-8b available as NIM.reasoning but defaults English on this account.
-  "security-agent":               "fast",
-  "architecture-agent":           "fast",
-  "risk-manager":                 "fast",
-  "assessment-science-agent":     "fast",
-  "behavioral-nudge-engine":      "fast",  // ADHD psychology = nuanced
+  // Gemma 4 local — handles Russian well, zero rate limits, full GPU utilization.
+  // Primary for all strategy/analysis agents. NVIDIA is backup, not primary.
+  "security-agent":               "gemma4",
+  "architecture-agent":           "gemma4",
+  "risk-manager":                 "gemma4",
+  "assessment-science-agent":     "gemma4",
+  "behavioral-nudge-engine":      "gemma4",
+  "product-agent":                "gemma4",
+  "growth-agent":                 "gemma4",
+  "needs-agent":                  "gemma4",
+  "analytics-retention-agent":    "gemma4",
+  "financial-analyst-agent":      "gemma4",
+  "ux-research-agent":            "gemma4",
+  "investor-board-agent":         "gemma4",
+  "competitor-intelligence-agent":"gemma4",
+  "ceo-report-agent":             "gemma4",
+  "fact-check-agent":             "gemma4",
+  "trend-scout-agent":            "gemma4",
+  "readiness-manager":            "gemma4",
+  "qa-engineer":                  "gemma4",
+  "qa-quality-agent":             "gemma4",
+  "onboarding-specialist-agent":  "gemma4",
+  "customer-success-agent":       "gemma4",
+  "data-engineer-agent":          "gemma4",
+  "technical-writer-agent":       "gemma4",
+  "payment-provider-agent":       "gemma4",
+  "community-manager-agent":      "gemma4",
+  "performance-engineer-agent":   "gemma4",
+  "university-ecosystem-partner-agent": "gemma4",
+  "devops-sre-agent":             "gemma4",
 
-  // Fast generalist — strategy, product, growth
-  "product-agent":                "fast",
-  "growth-agent":                 "fast",
-  "needs-agent":                  "fast",
-  "analytics-retention-agent":    "fast",
-  "financial-analyst-agent":      "fast",
-  "ux-research-agent":            "fast",
-  "investor-board-agent":         "fast",
-  "competitor-intelligence-agent":"fast",
-  "ceo-report-agent":             "fast",
-  "fact-check-agent":             "fast",
-  "trend-scout-agent":            "fast",
-
-  // Multilingual / cultural / content — RU/EN/AZ nuance
+  // Multilingual / cultural / content — RU/EN/AZ nuance — still use NVIDIA Mistral
   "cultural-intelligence-strategist":   "multilingual",
   "linkedin-content-creator":           "multilingual",
   "pr-media-agent":                     "multilingual",
@@ -76,13 +90,14 @@ const AGENT_TIER = {
   "sales-deal-strategist":              "multilingual",
   "sales-discovery-coach":              "multilingual",
 
-  // Synthesis — /swarm cross-agent, CEO reports, ecosystem summaries
+  // Synthesis — /swarm cross-agent — still use Nemotron 253B
   // (not per-agent; set dynamically in callAgent for synthesis calls)
 };
 
 function agentModel(agentId) {
   const tier = AGENT_TIER[agentId] || "local";
   switch (tier) {
+    case "gemma4":       return { provider: "ollama", model: GEMMA4_MODEL };
     case "reasoning":    return { provider: "nvidia", model: NIM.reasoning };
     case "fast":         return { provider: "nvidia", model: NIM.fast };
     case "multilingual": return { provider: "nvidia", model: NIM.multilingual };
@@ -97,16 +112,18 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
 
 const MODELS = [
-  { id: "qwen3:8b",            name: "Qwen3 8B (local — process agents)",         provider: "ollama" },
-  { id: NIM.reasoning,         name: "DeepSeek R1 (security, architecture, risk)", provider: "nvidia" },
-  { id: NIM.fast,              name: "Llama 3.3 70B (product, growth, analytics)", provider: "nvidia" },
-  { id: NIM.multilingual,      name: "Mistral Large (cultural, content, RU/AZ)",   provider: "nvidia" },
-  { id: NIM.synthesis,         name: "Nemotron 253B (swarm synthesis)",             provider: "nvidia" },
+  { id: GEMMA4_MODEL,           name: "Gemma 4 8B (local — 28 strategy agents)",   provider: "ollama" },
+  { id: "qwen3:8b",             name: "Qwen3 8B (local — process fallback)",        provider: "ollama" },
+  { id: NIM.reasoning,          name: "DeepSeek R1 (security, architecture, risk)", provider: "nvidia" },
+  { id: NIM.fast,               name: "Llama 3.3 70B (NVIDIA fast backup)",         provider: "nvidia" },
+  { id: NIM.multilingual,       name: "Mistral Large (cultural, content, RU/AZ)",   provider: "nvidia" },
+  { id: NIM.synthesis,          name: "Nemotron 253B (swarm synthesis)",             provider: "nvidia" },
   ...(anthropic ? [{ id: CLAUDE_MODEL, name: "Claude Haiku (emergency fallback)", provider: "anthropic" }] : []),
 ];
 
 const _nim = NVIDIA_API_KEY ? "✅" : "❌ no NVIDIA_API_KEY";
-console.info(`[zeus-gateway] Providers: Ollama=✅  NVIDIA=${_nim}  Anthropic=${anthropic ? "✅" : "❌"}`);
+console.info(`[zeus-gateway] Providers: Gemma4=✅  Qwen3=✅  NVIDIA=${_nim}  Anthropic=${anthropic ? "✅" : "❌"}`);
+console.info(`[zeus-gateway] 28 agents → Gemma4 local (no rate limit). 6 agents → NVIDIA Mistral/Nemotron.`);
 
 const AGENT_STATE_PATH = process.env.AGENT_STATE_PATH ||
   "C:/Projects/VOLAURA/memory/swarm/agent-state.json";
@@ -538,9 +555,11 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
   }
 
   // ── Routing with fallback chain ───────────────────────────────────────────────
+  // gemma4 agents: local first (no rate limit) → nvidia backup → anthropic last resort
+  // nvidia agents: cloud first → local gemma4 backup → anthropic last resort
   const chain = provider === "ollama"
-    ? [streamOllama, streamNvidia, streamHaiku]   // local → nvidia → anthropic
-    : [streamNvidia, streamOllama, streamHaiku];   // nvidia → local → anthropic
+    ? [streamOllama, streamNvidia, streamHaiku]
+    : [streamNvidia, streamOllama, streamHaiku];
 
   let lastErr;
   for (const fn of chain) {
