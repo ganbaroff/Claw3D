@@ -1,0 +1,40 @@
+name: Sync to ZEUS Gateway
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify-zeus:
+    name: Notify ZEUS — claw3d changed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+
+      - name: Build change summary
+        id: summary
+        run: |
+          COMMITS=$(git log --oneline -5 --format="%h %s" | head -5)
+          FILES_CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | head -20 | tr '\n' ', ')
+          SUMMARY="claw3d push to main by ${{ github.actor }}. Commits: ${COMMITS}. Files: ${FILES_CHANGED}"
+          echo "summary=${SUMMARY:0:500}" >> "$GITHUB_OUTPUT"
+
+      - name: POST to ZEUS /event
+        if: ${{ vars.ZEUS_GATEWAY_URL != '' }}
+        run: |
+          curl -s -X POST "${{ vars.ZEUS_GATEWAY_URL }}/event" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.GATEWAY_SECRET }}" \
+            -d '{
+              "source": "github-claw3d",
+              "event": "push.main",
+              "severity": "P2",
+              "payload": {
+                "repo": "claw3d",
+                "actor": "${{ github.actor }}",
+                "sha": "${{ github.sha }}",
+                "summary": "${{ steps.summary.outputs.summary }}"
+              }
+            }' || echo "ZEUS unreachable — non-blocking"
