@@ -24,11 +24,67 @@ const formatAgentNameplateText = (value: string): string => {
   return firstName || normalized;
 };
 
+// Life Simulator: state → status dot hex color
+const OFFICE_STATE_DOT_COLOR: Record<string, string> = {
+  idle:       "#f59e0b",
+  focused:    "#06b6d4",
+  working:    "#22c55e",
+  waiting:    "#eab308",
+  blocked:    "#f97316",
+  overloaded: "#ef4444",
+  recovering: "#a855f7",
+  degraded:   "#6b7280",
+  meeting:    "#3b82f6",
+  error:      "#ef4444",
+};
+
+// Life Simulator: state → pulse ring hex color (null = no ring)
+const OFFICE_STATE_RING_COLOR: Record<string, string | null> = {
+  idle:       null,
+  focused:    "#06b6d4",
+  working:    "#22c55e",
+  waiting:    "#eab308",
+  blocked:    "#f97316",
+  overloaded: "#ef4444",
+  recovering: "#a855f7",
+  degraded:   "#6b7280",
+  meeting:    "#3b82f6",
+  error:      "#ef4444",
+};
+
+// Life Simulator: state badge label shown above nameplate
+const OFFICE_STATE_LABEL: Record<string, string> = {
+  idle:       "",
+  focused:    "🧠 focused",
+  working:    "⚡ working",
+  waiting:    "⌛ waiting",
+  blocked:    "🚧 blocked",
+  overloaded: "🔥 overloaded",
+  recovering: "🌿 recovering",
+  degraded:   "⚠️ degraded",
+  meeting:    "👥 meeting",
+  error:      "❌ error",
+};
+
+// Life Simulator: pulse speed multiplier per state
+const OFFICE_STATE_PULSE_SPEED: Record<string, number> = {
+  focused:    0.025,
+  working:    0.05,
+  waiting:    0.035,
+  blocked:    0.07,
+  overloaded: 0.1,
+  recovering: 0.018,
+  degraded:   0.012,
+  meeting:    0.03,
+  error:      0.08,
+};
+
 export const AgentModel = memo(function AgentModel({
   agentId,
   name,
   subtitle,
   status,
+  officeState = null,
   color,
   appearance,
   agentsRef,
@@ -311,19 +367,31 @@ export const AgentModel = memo(function AgentModel({
     const isError = agent.status === "error";
     const isAway = agent.state === "away";
 
+    // Life Simulator: derive officeState from agent for imperative color updates
+    const agentOfficeState: string =
+      !isJanitor && "officeState" in agent && agent.officeState
+        ? (agent.officeState as string)
+        : isError
+          ? "error"
+          : working
+            ? "working"
+            : "idle";
+
     if (statusDotMatRef.current) {
       statusDotMatRef.current.color.set(
-        isError ? "#ef4444" : working ? "#22c55e" : "#f59e0b",
+        OFFICE_STATE_DOT_COLOR[agentOfficeState] ?? "#f59e0b",
       );
     }
 
     if (pulseRingRef.current && pulseRingMatRef.current) {
-      if (working || isError) {
-        const pulse = (Math.sin(agent.frame * 0.05) + 1) / 2;
-        const scale = isError ? 1.25 + pulse * 0.55 : 1.2 + pulse * 0.8;
+      const ringColor = OFFICE_STATE_RING_COLOR[agentOfficeState] ?? null;
+      if (ringColor) {
+        const speed = OFFICE_STATE_PULSE_SPEED[agentOfficeState] ?? 0.05;
+        const pulse = (Math.sin(agent.frame * speed) + 1) / 2;
+        const scale = agentOfficeState === "error" ? 1.25 + pulse * 0.55 : 1.2 + pulse * 0.8;
         pulseRingRef.current.scale.setScalar(scale);
-        pulseRingMatRef.current.color.set(isError ? "#ef4444" : "#22c55e");
-        pulseRingMatRef.current.opacity = isError
+        pulseRingMatRef.current.color.set(ringColor);
+        pulseRingMatRef.current.opacity = agentOfficeState === "error"
           ? 0.7 - pulse * 0.3
           : 0.55 - pulse * 0.45;
         pulseRingRef.current.visible = true;
@@ -1069,6 +1137,21 @@ export const AgentModel = memo(function AgentModel({
           depthWrite={false}
         />
       </mesh>
+      {!activeSpeechBubble && nameplateText && officeState && officeState !== "idle" ? (
+        <Billboard position={[0, 1.26, 0]}>
+          <Text
+            position={[0, 0, 0.001]}
+            fontSize={0.09}
+            color={OFFICE_STATE_DOT_COLOR[officeState] ?? "#f59e0b"}
+            anchorX="center"
+            anchorY="middle"
+            maxWidth={1.2}
+            font={undefined}
+          >
+            {OFFICE_STATE_LABEL[officeState] ?? ""}
+          </Text>
+        </Billboard>
+      ) : null}
       {!activeSpeechBubble && nameplateText ? (
         <Billboard position={[0, 1.05, 0]}>
           <mesh position={[0, 0, -0.001]}>

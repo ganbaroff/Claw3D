@@ -3,6 +3,7 @@ import type { RefObject } from "react";
 import type {
   FurnitureItem,
   OfficeAgent,
+  OfficeAgentState,
   RenderAgent,
 } from "@/features/retro-office/core/types";
 
@@ -32,6 +33,7 @@ export type AgentModelProps = {
   name: string;
   subtitle?: string | null;
   status: OfficeAgent["status"];
+  officeState?: OfficeAgentState | null;
   color: string;
   appearance?: AgentAvatarProfile | null;
   agentsRef: RefObject<RenderAgent[]>;

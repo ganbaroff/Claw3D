@@ -14,6 +14,7 @@
 ## 🟡 В РАБОТЕ
 
 | # | Задача | Агент | Статус |
+| Z-EV-MNMVBDDE | [sentry] error.unhandled → Security Agent | security-agent | P1 |
 |---|--------|-------|--------|
 | Z-02 | RemoteAgentChatPanel — ответы не отражаются в облаке | architecture-agent | Не начато |
 | Z-03 | Life Sim / Ready Player Me аватары в claw3d | product-agent | Не начато |
