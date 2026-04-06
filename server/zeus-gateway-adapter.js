@@ -3,7 +3,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { randomUUID } = require("crypto");
+const { randomUUID, createHmac, timingSafeEqual } = require("crypto");
 const { WebSocketServer } = require("ws");
 const Anthropic = require("@anthropic-ai/sdk");
 
@@ -56,6 +56,194 @@ const NIM = {
   multilingual:  "mistralai/mistral-large-2-instruct",
   synthesis:     "nvidia/llama-3.1-nemotron-ultra-253b-v1",
 };
+
+// ─── Event-driven agent system ────────────────────────────────────────────────
+//
+// Agents wake on real events from Railway, GitHub, Sentry.
+// Idle between events — no cron, no wasted tokens.
+//
+// Event schema:
+//   { source, event, domain, severity, payload }
+//   source:   "github" | "sentry" | "railway" | "internal"
+//   domain:   "security" | "infra" | "product" | "qa" | "architecture" | "*"
+//   severity: "P0" | "P1" | "P2" | "info"
+//
+// Webhook secrets (HMAC verification):
+const WEBHOOK_SECRET_GITHUB  = process.env.WEBHOOK_SECRET_GITHUB  || "";
+const WEBHOOK_SECRET_SENTRY  = process.env.WEBHOOK_SECRET_SENTRY  || "";
+const WEBHOOK_SECRET_RAILWAY = process.env.WEBHOOK_SECRET_RAILWAY || "";
+
+// Gateway master secret — office UI uses this to identify itself
+const GATEWAY_SECRET = process.env.GATEWAY_SECRET || "zeus-dev-secret";
+
+// Domain → which agents wake up
+const DOMAIN_AGENTS = {
+  "security":     ["security-agent"],
+  "infra":        ["devops-sre-agent", "architecture-agent"],
+  "qa":           ["qa-engineer", "qa-quality-agent"],
+  "product":      ["product-agent", "ux-research-agent"],
+  "architecture": ["architecture-agent"],
+  "performance":  ["performance-engineer-agent"],
+  "analytics":    ["analytics-retention-agent"],
+  "*":            ["security-agent", "devops-sre-agent", "architecture-agent"],
+};
+
+// Event type → domain mapping (auto-classify incoming webhooks)
+const EVENT_DOMAIN_MAP = [
+  { pattern: /auth|rls|jwt|token|key|secret|bypass|unauthori/i,         domain: "security",     severity: "P0" },
+  { pattern: /deploy|restart|crash|oom|memory|cpu|timeout|down|health/i, domain: "infra",        severity: "P0" },
+  { pattern: /error|exception|unhandled|500|panic/i,                     domain: "qa",           severity: "P1" },
+  { pattern: /performance|slow|latency|p99|bottleneck/i,                 domain: "performance",  severity: "P1" },
+  { pattern: /push|commit|pull_request|merge/i,                          domain: "architecture", severity: "P2" },
+  { pattern: /user|retention|churn|onboard|funnel/i,                     domain: "analytics",    severity: "P2" },
+];
+
+// Sanitize payload — strip env vars, secrets, tokens from stack traces
+function sanitizePayload(obj, depth = 0) {
+  if (depth > 5 || !obj || typeof obj !== "object") return obj;
+  const BLOCKED = /password|secret|key|token|api_key|auth|credential|dsn|database_url/i;
+  const out = Array.isArray(obj) ? [] : {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (BLOCKED.test(k)) { out[k] = "[REDACTED]"; continue; }
+    if (typeof v === "string" && v.length > 500) { out[k] = v.slice(0, 500) + "...[truncated]"; continue; }
+    out[k] = typeof v === "object" ? sanitizePayload(v, depth + 1) : v;
+  }
+  return out;
+}
+
+// Classify incoming raw event into domain + severity
+function classifyEvent(source, rawEvent, rawPayload) {
+  const text = JSON.stringify({ source, event: rawEvent, payload: rawPayload }).toLowerCase();
+  for (const { pattern, domain, severity } of EVENT_DOMAIN_MAP) {
+    if (pattern.test(text)) return { domain, severity };
+  }
+  return { domain: "infra", severity: "P2" }; // default
+}
+
+// Verify HMAC signature for incoming webhooks
+function verifyHmac(secret, body, sigHeader) {
+  if (!secret || !sigHeader) return !secret; // if no secret configured, allow
+  const sig = sigHeader.replace(/^sha256=/, "");
+  const expected = createHmac("sha256", secret).update(body).digest("hex");
+  try { return timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex")); }
+  catch { return false; }
+}
+
+// Write a new task to cto-kanban.md
+function appendKanban(taskId, title, agentId, priority) {
+  const kanbanPath = path.join(__dirname, "..", "memory", "cto-kanban.md");
+  try {
+    let kanban = fs.readFileSync(kanbanPath, "utf8");
+    const row = `| ${taskId} | ${title} | ${agentId} | ${priority} |`;
+    // Insert after the В РАБОТЕ header row
+    kanban = kanban.replace(
+      /(\| # \| Задача \| Агент \| Статус \|\n)/,
+      `$1${row}\n`
+    );
+    fs.writeFileSync(kanbanPath, kanban);
+  } catch { /* kanban write failed — non-fatal */ }
+}
+
+// Broadcast a message to all connected WS clients
+const activeSendEventFns = new Set();
+
+// Per-agent event queue (only one active task per agent at a time)
+const agentBusy = new Set();
+
+// Wake an agent with a specific event context
+async function wakeAgent(agentId, event) {
+  if (agentBusy.has(agentId)) {
+    console.log(`[event] ${agentId} already busy — queuing skipped`);
+    return;
+  }
+  const agent = agents.get(agentId);
+  if (!agent) return;
+
+  agentBusy.add(agentId);
+  const taskId = `Z-EV-${Date.now().toString(36).toUpperCase()}`;
+  console.log(`[event] Waking ${agentId} for ${event.source}:${event.event} (${event.severity})`);
+
+  // Broadcast to office: agent is waking
+  const broadcast = (payload) => activeSendEventFns.forEach(fn => fn({
+    type: "event", event: "agent.wake", payload
+  }));
+  broadcast({ agentId, taskId, source: event.source, eventType: event.event, severity: event.severity, state: "started" });
+
+  const sessionKey = `event:${agentId}:${taskId}`;
+  const prompt = `СОБЫТИЕ — требует твоего внимания прямо сейчас.
+
+Источник: ${event.source}
+Тип: ${event.event}
+Приоритет: ${event.severity}
+Домен: ${event.domain}
+
+Детали:
+\`\`\`json
+${JSON.stringify(event.payload, null, 2).slice(0, 2000)}
+\`\`\`
+
+Что сделать:
+1. Разберись что именно произошло
+2. Определи — это реальная проблема или ложное срабатывание
+3. Если реальная — напиши готовое решение (файл, строка, команда)
+4. Сообщи команде: что нашёл, что предлагаешь, нужен ли CEO для деплоя
+
+Работай быстро. Команда видит что ты проснулся.`;
+
+  try {
+    const reply = await callClaude(agent, sessionKey, prompt, (frame) => {
+      if (frame.payload?.state === "delta" || frame.payload?.state === "final") {
+        broadcast({ agentId, taskId, ...frame.payload, state: "working" });
+      }
+    }, taskId);
+
+    const clean = (visibleContent(reply) || reply).trim();
+
+    // Save finding
+    const date = new Date().toISOString().slice(0, 10);
+    const findingsDir = path.join(__dirname, "..", "memory", "agent-findings");
+    fs.mkdirSync(findingsDir, { recursive: true });
+    if (clean.length > 80 && !clean.startsWith("[")) {
+      fs.writeFileSync(
+        path.join(findingsDir, `${date}-${agentId}-${taskId}.md`),
+        `# ${agent.name} — событие ${event.source}:${event.event}\n**taskId:** ${taskId}\n**Дата:** ${date}\n**Приоритет:** ${event.severity}\n\n${clean}`
+      );
+      // Add to kanban
+      const title = `[${event.source}] ${event.event} → ${agent.name}`;
+      appendKanban(taskId, title, agentId, event.severity);
+    }
+
+    broadcast({ agentId, taskId, state: "done", result: clean.slice(0, 500) });
+    console.log(`[event] ${agentId} done — finding saved as ${taskId}`);
+  } catch (e) {
+    console.warn(`[event] ${agentId} failed: ${e.message}`);
+    broadcast({ agentId, taskId, state: "error", error: e.message });
+  } finally {
+    agentBusy.delete(agentId);
+  }
+}
+
+// Handle incoming webhook — route to the right agents
+async function handleWebhook(source, rawEvent, payload, severity) {
+  const { domain } = classifyEvent(source, rawEvent, payload);
+  const agentIds = DOMAIN_AGENTS[domain] || DOMAIN_AGENTS["*"];
+  const clean = sanitizePayload(payload);
+
+  const event = { source, event: rawEvent, domain, severity, payload: clean, ts: new Date().toISOString() };
+
+  // Log event
+  const eventsDir = path.join(__dirname, "..", "memory", "events");
+  try {
+    fs.mkdirSync(eventsDir, { recursive: true });
+    const logFile = path.join(eventsDir, `${new Date().toISOString().slice(0, 10)}-events.jsonl`);
+    fs.appendFileSync(logFile, JSON.stringify(event) + "\n");
+  } catch {}
+
+  console.log(`[webhook] ${source}:${rawEvent} → domain=${domain} severity=${severity} agents=[${agentIds.join(",")}]`);
+
+  // Wake agents in parallel (each checks agentBusy)
+  agentIds.forEach(id => wakeAgent(id, event).catch(e => console.warn(`[webhook] wakeAgent ${id}:`, e.message)));
+}
 
 // Per-agent tier assignment
 // Agents NOT listed here get "local" (qwen3:8b via Ollama)
@@ -429,7 +617,7 @@ const files = new Map();
 const sessionSettings = new Map();
 const conversationHistory = new Map();
 const activeRuns = new Map();
-const activeSendEventFns = new Set();
+// activeSendEventFns defined above in event-driven section
 
 function randomId() { return randomUUID().replace(/-/g, ""); }
 function sessionKeyFor(agentId) { return `agent:${agentId}:${MAIN_KEY}`; }
@@ -1242,9 +1430,75 @@ function startAdapter() {
       return;
     }
 
+    // ── Webhook endpoint — receives events from Railway, GitHub, Sentry ──────────
+    if (req.url === "/webhook" && req.method === "POST") {
+      const cors2 = { ...cors, "Access-Control-Allow-Methods": "POST, OPTIONS" };
+      let body = "";
+      req.on("data", d => body += d);
+      req.on("end", async () => {
+        try {
+          const source = (req.headers["x-webhook-source"] || req.headers["x-github-event"] && "github" || "unknown").toLowerCase();
+          const sig = req.headers["x-hub-signature-256"] || req.headers["x-sentry-signature"] || req.headers["x-railway-signature"] || "";
+
+          // Verify HMAC for known sources
+          const secret = source === "github" ? WEBHOOK_SECRET_GITHUB
+            : source === "sentry" ? WEBHOOK_SECRET_SENTRY
+            : source === "railway" ? WEBHOOK_SECRET_RAILWAY : "";
+          if (secret && !verifyHmac(secret, body, sig)) {
+            res.writeHead(401, { "Content-Type": "application/json", ...cors2 });
+            res.end(JSON.stringify({ error: "invalid signature" }));
+            return;
+          }
+
+          const data = JSON.parse(body);
+          const rawEvent = req.headers["x-github-event"] || data.event || data.type || "unknown";
+          const severityHeader = req.headers["x-severity"] || "";
+          const { domain, severity: autoSeverity } = classifyEvent(source, rawEvent, data);
+          const severity = severityHeader || autoSeverity;
+
+          res.writeHead(200, { "Content-Type": "application/json", ...cors2 });
+          res.end(JSON.stringify({ ok: true, source, event: rawEvent, domain, severity }));
+
+          // Handle async — don't block response
+          handleWebhook(source, rawEvent, data, severity);
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json", ...cors2 });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+
+    // ── Internal event trigger — for testing and office UI ───────────────────────
+    if (req.url === "/event" && req.method === "POST") {
+      const authHeader = req.headers["authorization"] || "";
+      if (!authHeader.includes(GATEWAY_SECRET)) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      let body = "";
+      req.on("data", d => body += d);
+      req.on("end", () => {
+        try {
+          const { source = "internal", event: evt = "manual", severity = "P1", payload = {}, agents: targetAgents } = JSON.parse(body);
+          const { domain } = classifyEvent(source, evt, payload);
+          const agentIds = targetAgents || DOMAIN_AGENTS[domain] || DOMAIN_AGENTS["*"];
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, waking: agentIds }));
+          const event = { source, event: evt, domain, severity, payload, ts: new Date().toISOString() };
+          agentIds.forEach(id => wakeAgent(id, event).catch(() => {}));
+        } catch (e) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+
     res.writeHead(200, { "Content-Type": "text/plain", ...cors });
-    const aiStatus = anthropic ? "Claude ✅" : NVIDIA_API_KEY ? "NVIDIA ✅" : OLLAMA_URL ? "Ollama ✅" : "⚠️ no AI";
-    res.end(`ZEUS Gateway — ${agents.size} agents — ${aiStatus}\nREST: GET /agents\n`);
+    const aiStatus = CEREBRAS_API_KEY ? "Cerebras ✅" : NVIDIA_API_KEY ? "NVIDIA ✅" : OLLAMA_URL ? "Ollama ✅" : "⚠️ no AI";
+    res.end(`ZEUS Gateway — ${agents.size} agents — ${aiStatus}\nREST: GET /agents  POST /webhook  POST /event\n`);
   });
 
   const wss = new WebSocketServer({ server: httpServer });
@@ -1318,21 +1572,22 @@ function startAdapter() {
     console.log(`[zeus-gateway] AI: ${aiMode}`);
     console.log(`[zeus-gateway] MindShift context: ${MINDSHIFT}`);
 
-    // ── Autonomous cron — agents work 24/7 without CEO ───────────────────────
-    const AUTO_RUN_INTERVAL_MS = parseInt(process.env.AUTO_RUN_INTERVAL_MS || "7200000", 10); // 2h default
-    if (AUTO_RUN_INTERVAL_MS > 0) {
-      // First run: 3 minutes after startup (let server warm up)
-      const firstRunDelay = parseInt(process.env.AUTO_RUN_FIRST_DELAY_MS || "180000", 10);
-      setTimeout(() => {
-        console.log(`[swarm.auto] First autonomous audit starting...`);
-        runAutoAudit().catch(e => console.error("[swarm.auto] cron error:", e.message));
-        // Then every AUTO_RUN_INTERVAL_MS
-        setInterval(() => {
-          console.log(`[swarm.auto] Scheduled autonomous audit starting...`);
-          runAutoAudit().catch(e => console.error("[swarm.auto] cron error:", e.message));
-        }, AUTO_RUN_INTERVAL_MS);
-      }, firstRunDelay);
-      console.log(`[zeus-gateway] Autonomous cron: first run in ${firstRunDelay/60000}min, then every ${AUTO_RUN_INTERVAL_MS/3600000}h`);
+    // ── Event-driven mode — agents wake on real events, not on a clock ──────────
+    // Cron replaced by webhooks. Use POST /webhook (Railway/GitHub/Sentry) or POST /event (manual).
+    // One optional daily digest at midnight — keeps shared brain fresh even on quiet days.
+    const DAILY_DIGEST = process.env.DAILY_DIGEST !== "false";
+    if (DAILY_DIGEST) {
+      const msUntilMidnight = () => {
+        const now = new Date();
+        const midnight = new Date(now); midnight.setHours(24, 0, 0, 0);
+        return midnight - now;
+      };
+      setTimeout(function dailyTick() {
+        console.log(`[swarm.auto] Daily digest starting...`);
+        runAutoAudit().catch(e => console.error("[swarm.auto] daily digest error:", e.message));
+        setTimeout(dailyTick, 24 * 60 * 60 * 1000);
+      }, msUntilMidnight());
+      console.log(`[zeus-gateway] Event-driven mode active. Webhook: POST /webhook. Daily digest: midnight.`);
     }
   });
 }
