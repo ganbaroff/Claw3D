@@ -40,6 +40,15 @@ const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY || "";
 // Used as primary for "fast" agents so NVIDIA rate limits don't block all 37 agents.
 const GEMMA4_MODEL = process.env.GEMMA4_MODEL || "gemma4:latest";
 
+// Cerebras — wafer-scale silicon, 2000+ tokens/sec, OpenAI-compatible API.
+// Fastest inference provider available. Used as primary for all strategy agents.
+const CEREBRAS_URL     = "https://api.cerebras.ai/v1";
+const CEREBRAS_API_KEY = process.env.CEREBRAS_API_KEY || "";
+const CEREBRAS_MODELS = {
+  fast:  "qwen-3-235b-a22b-instruct-2507", // Qwen 3 235B — largest, best quality
+  small: "llama3.1-8b",                    // 8B — fast for simple tasks
+};
+
 // Keys for each NVIDIA model
 const NIM = {
   fast:          "meta/llama-3.3-70b-instruct",
@@ -49,60 +58,63 @@ const NIM = {
 };
 
 // Per-agent tier assignment
-// Agents NOT listed here get "local" (qwen3:8b)
+// Agents NOT listed here get "local" (qwen3:8b via Ollama)
 const AGENT_TIER = {
-  // Gemma 4 local — handles Russian well, zero rate limits, full GPU utilization.
-  // Primary for all strategy/analysis agents. NVIDIA is backup, not primary.
-  "security-agent":               "gemma4",
-  "architecture-agent":           "gemma4",
-  "risk-manager":                 "gemma4",
-  "assessment-science-agent":     "gemma4",
-  "behavioral-nudge-engine":      "gemma4",
-  "product-agent":                "gemma4",
-  "growth-agent":                 "gemma4",
-  "needs-agent":                  "gemma4",
-  "analytics-retention-agent":    "gemma4",
-  "financial-analyst-agent":      "gemma4",
-  "ux-research-agent":            "gemma4",
-  "investor-board-agent":         "gemma4",
-  "competitor-intelligence-agent":"gemma4",
-  "ceo-report-agent":             "gemma4",
-  "fact-check-agent":             "gemma4",
-  "trend-scout-agent":            "gemma4",
-  "readiness-manager":            "gemma4",
-  "qa-engineer":                  "gemma4",
-  "qa-quality-agent":             "gemma4",
-  "onboarding-specialist-agent":  "gemma4",
-  "customer-success-agent":       "gemma4",
-  "data-engineer-agent":          "gemma4",
-  "technical-writer-agent":       "gemma4",
-  "payment-provider-agent":       "gemma4",
-  "community-manager-agent":      "gemma4",
-  "performance-engineer-agent":   "gemma4",
-  "university-ecosystem-partner-agent": "gemma4",
-  "devops-sre-agent":             "gemma4",
+  // Cerebras — 2000+ tok/s, Llama 4 Scout. Primary for all strategy/analysis agents.
+  // Fallback: Gemma4 local → NVIDIA → Anthropic
+  "security-agent":               "cerebras",
+  "architecture-agent":           "cerebras",
+  "risk-manager":                 "cerebras",
+  "assessment-science-agent":     "cerebras",
+  "behavioral-nudge-engine":      "cerebras",
+  "product-agent":                "cerebras",
+  "growth-agent":                 "cerebras",
+  "needs-agent":                  "cerebras",
+  "analytics-retention-agent":    "cerebras",
+  "financial-analyst-agent":      "cerebras",
+  "ux-research-agent":            "cerebras",
+  "investor-board-agent":         "cerebras",
+  "competitor-intelligence-agent":"cerebras",
+  "ceo-report-agent":             "cerebras",
+  "fact-check-agent":             "cerebras",
+  "trend-scout-agent":            "cerebras",
+  "readiness-manager":            "cerebras",
+  "qa-engineer":                  "cerebras",
+  "qa-quality-agent":             "cerebras",
+  "onboarding-specialist-agent":  "cerebras",
+  "customer-success-agent":       "cerebras",
+  "data-engineer-agent":          "cerebras",
+  "technical-writer-agent":       "cerebras",
+  "payment-provider-agent":       "cerebras",
+  "community-manager-agent":      "cerebras",
+  "performance-engineer-agent":   "cerebras",
+  "university-ecosystem-partner-agent": "cerebras",
+  "devops-sre-agent":             "cerebras",
+  "swarm-synthesizer":            "cerebras",  // synthesis too — Llama 4 Scout is strong
 
-  // Multilingual / cultural / content — RU/EN/AZ nuance — still use NVIDIA Mistral
-  "cultural-intelligence-strategist":   "multilingual",
-  "linkedin-content-creator":           "multilingual",
-  "pr-media-agent":                     "multilingual",
-  "communications-strategist":          "multilingual",
-  "sales-deal-strategist":              "multilingual",
-  "sales-discovery-coach":              "multilingual",
+  // Multilingual / cultural / content — Cerebras handles RU well too now
+  "cultural-intelligence-strategist":   "cerebras",
+  "linkedin-content-creator":           "cerebras",
+  "pr-media-agent":                     "cerebras",
+  "communications-strategist":          "cerebras",
+  "sales-deal-strategist":              "cerebras",
+  "sales-discovery-coach":              "cerebras",
 
-  // Synthesis — /swarm cross-agent — still use Nemotron 253B
-  // (not per-agent; set dynamically in callAgent for synthesis calls)
+  // Personas — Gemma4 local (no latency budget needed)
+  "firuza":   "gemma4",
+  "nigar":    "gemma4",
 };
 
 function agentModel(agentId) {
   const tier = AGENT_TIER[agentId] || "local";
   switch (tier) {
-    case "gemma4":       return { provider: "ollama", model: GEMMA4_MODEL };
-    case "reasoning":    return { provider: "nvidia", model: NIM.reasoning };
-    case "fast":         return { provider: "nvidia", model: NIM.fast };
-    case "multilingual": return { provider: "nvidia", model: NIM.multilingual };
-    case "synthesis":    return { provider: "nvidia", model: NIM.synthesis };
-    default:             return { provider: "ollama", model: "qwen3:8b" };
+    case "cerebras":     return { provider: "cerebras", model: CEREBRAS_MODELS.fast };
+    case "gemma4":       return { provider: "ollama",   model: GEMMA4_MODEL };
+    case "reasoning":    return { provider: "nvidia",   model: NIM.reasoning };
+    case "fast":         return { provider: "nvidia",   model: NIM.fast };
+    case "multilingual": return { provider: "nvidia",   model: NIM.multilingual };
+    case "synthesis":    return { provider: "nvidia",   model: NIM.synthesis };
+    default:             return { provider: "ollama",   model: "qwen3:8b" };
   }
 }
 
@@ -112,18 +124,20 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const anthropic = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
 
 const MODELS = [
-  { id: GEMMA4_MODEL,           name: "Gemma 4 8B (local — 28 strategy agents)",   provider: "ollama" },
-  { id: "qwen3:8b",             name: "Qwen3 8B (local — process fallback)",        provider: "ollama" },
-  { id: NIM.reasoning,          name: "DeepSeek R1 (security, architecture, risk)", provider: "nvidia" },
-  { id: NIM.fast,               name: "Llama 3.3 70B (NVIDIA fast backup)",         provider: "nvidia" },
-  { id: NIM.multilingual,       name: "Mistral Large (cultural, content, RU/AZ)",   provider: "nvidia" },
-  { id: NIM.synthesis,          name: "Nemotron 253B (swarm synthesis)",             provider: "nvidia" },
-  ...(anthropic ? [{ id: CLAUDE_MODEL, name: "Claude Haiku (emergency fallback)", provider: "anthropic" }] : []),
+  { id: CEREBRAS_MODELS.fast,   name: "Qwen 3 235B (Cerebras — 2000 tok/s primary)",   provider: "cerebras" },
+  { id: CEREBRAS_MODELS.small,  name: "Llama 3.1 8B (Cerebras — fast/cheap)",          provider: "cerebras" },
+  { id: GEMMA4_MODEL,           name: "Gemma 4 8B (Ollama local — GPU fallback)",       provider: "ollama" },
+  { id: "qwen3:8b",             name: "Qwen3 8B (Ollama local — process agents)",       provider: "ollama" },
+  { id: NIM.reasoning,          name: "DeepSeek R1 (NVIDIA — deep analysis)",           provider: "nvidia" },
+  { id: NIM.fast,               name: "Llama 3.3 70B (NVIDIA — cloud backup)",          provider: "nvidia" },
+  { id: NIM.synthesis,          name: "Nemotron 253B (NVIDIA — swarm synthesis)",        provider: "nvidia" },
+  ...(anthropic ? [{ id: CLAUDE_MODEL, name: "Claude Haiku (Anthropic — last resort)", provider: "anthropic" }] : []),
 ];
 
+const _cerebras = CEREBRAS_API_KEY ? "✅" : "❌ no CEREBRAS_API_KEY";
 const _nim = NVIDIA_API_KEY ? "✅" : "❌ no NVIDIA_API_KEY";
-console.info(`[zeus-gateway] Providers: Gemma4=✅  Qwen3=✅  NVIDIA=${_nim}  Anthropic=${anthropic ? "✅" : "❌"}`);
-console.info(`[zeus-gateway] 28 agents → Gemma4 local (no rate limit). 6 agents → NVIDIA Mistral/Nemotron.`);
+console.info(`[zeus-gateway] Providers: Cerebras=${_cerebras}  Gemma4=✅  NVIDIA=${_nim}  Anthropic=${anthropic ? "✅" : "❌"}`);
+console.info(`[zeus-gateway] 37 agents → Cerebras Qwen3-235B (primary). Gemma4 local fallback.`);
 
 const AGENT_STATE_PATH = process.env.AGENT_STATE_PATH ||
   "C:/Projects/VOLAURA/memory/swarm/agent-state.json";
@@ -210,21 +224,31 @@ The project: MindShift — an ADHD-aware productivity app (React + TypeScript + 
 Language rule (non-negotiable):
 - Respond in the SAME language the user writes in. Russian message = Russian reply. English = English. Never switch languages unprompted.
 
+INSTANT FAIL — never output any of these phrases (you will be disqualified if you do):
+- "как языковая модель" / "as an AI language model" / "as an AI"
+- "у меня нет доступа" / "я не имею доступа"
+- "я не могу" / "I cannot" / "I'm unable to"
+- "к сожалению" at the start of a sentence / "извините"
+- "у меня нет возможности"
+If you catch yourself about to write any of these — STOP and give a concrete answer instead.
+"I don't know" is fine. "I'd need the file X to be sure" is fine. "как языковая модель" is NEVER fine.
+
 How you talk:
 - Like a smart colleague who actually cares about the outcome, not a report generator
 - Lead with your opinion or the answer. Put caveats after, not before.
 - Say "this is wrong" when something is wrong. Say "I don't know" when you don't know.
 - No "Finding → Evidence → Fix" templates. Just talk.
-- No "Great question!", no "Certainly!", no "How can I assist you today?", no corporate filler of any kind.
+- No "Great question!", no "Certainly!", no "How can I assist you today?", no corporate filler.
 - Swear if it fits. Be real.
 - Short when you're confident. Long only when the topic demands it.
 - If you need a file you don't have — just say which one and why.
+- During autonomous audits: dig, don't skim. "Everything looks fine" is a red flag, not a result.
 
 What you don't do:
 - Invent facts you weren't given
 - Go outside your domain without flagging it
 - Pretend to be neutral when you have a clear opinion
-- Follow MindShift's own rules: no red color, ADHD-safe copy, no shame mechanics — these are non-negotiable even for you
+- Follow MindShift's own rules: no red color, ADHD-safe copy, no shame mechanics — non-negotiable
 
 You're here to help Yusif build something real. Act like it.`;
 }
@@ -463,11 +487,13 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
   // ── helpers ──────────────────────────────────────────────────────────────────
 
   async function streamOllama() {
+    // Cloud model names contain "/" — swap to local Gemma4 when falling back to Ollama
+    const ollamaModel = model.includes("/") ? GEMMA4_MODEL : model;
     const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model,
+        model: ollamaModel,
         messages: [{ role: "system", content: systemPrompt }, ...messages],
         stream: true,
         options: { num_predict: 1024, temperature: 0.5 },
@@ -536,6 +562,47 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
     if (buf) emitChat("delta", { message: { role: "assistant", content: visibleContent(fullReply) } });
   }
 
+  async function streamCerebras() {
+    if (!CEREBRAS_API_KEY) throw new Error("CEREBRAS_API_KEY not set");
+    const resp = await fetch(`${CEREBRAS_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${CEREBRAS_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "system", content: systemPrompt }, ...messages],
+        max_completion_tokens: 1024,
+        temperature: 0.5,
+        stream: true,
+      }),
+    });
+    if (!resp.ok) throw new Error(`Cerebras ${resp.status}: ${await resp.text()}`);
+
+    let buf = "";
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const lines = dec.decode(value, { stream: true }).split("\n").filter(l => l.startsWith("data: "));
+      for (const line of lines) {
+        const raw = line.slice(6).trim();
+        if (raw === "[DONE]") continue;
+        try {
+          const token = JSON.parse(raw).choices?.[0]?.delta?.content || "";
+          buf += token; fullReply += token;
+          if (buf.match(/[.!?]\s/) || buf.length >= 150) {
+            emitChat("delta", { message: { role: "assistant", content: visibleContent(fullReply) } });
+            buf = "";
+          }
+        } catch { /* malformed chunk */ }
+      }
+    }
+    if (buf) emitChat("delta", { message: { role: "assistant", content: visibleContent(fullReply) } });
+  }
+
   async function streamHaiku() {
     if (!anthropic) throw new Error("ANTHROPIC_API_KEY not set");
     const stream = anthropic.messages.stream({
@@ -555,11 +622,14 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
   }
 
   // ── Routing with fallback chain ───────────────────────────────────────────────
-  // gemma4 agents: local first (no rate limit) → nvidia backup → anthropic last resort
-  // nvidia agents: cloud first → local gemma4 backup → anthropic last resort
-  const chain = provider === "ollama"
-    ? [streamOllama, streamNvidia, streamHaiku]
-    : [streamNvidia, streamOllama, streamHaiku];
+  // cerebras → gemma4 local → nvidia cloud → anthropic last resort
+  // ollama   → cerebras → nvidia → anthropic
+  // nvidia   → cerebras → gemma4 local → anthropic
+  const chain = provider === "cerebras"
+    ? [streamCerebras, streamOllama, streamNvidia, streamHaiku]
+    : provider === "ollama"
+    ? [streamOllama, streamCerebras, streamNvidia, streamHaiku]
+    : [streamNvidia, streamCerebras, streamOllama, streamHaiku];
 
   let lastErr;
   for (const fn of chain) {
@@ -840,51 +910,11 @@ async function handleMethod(method, params, id, sendEvent) {
     case "wake":
       return resOk(id, { ok: true });
 
-    // ─── Autonomous mode — each agent audits their domain, finds and fixes own issues ──
+    // ─── Autonomous mode — all agents audit their domains, synthesizer updates shared brain ──
     case "swarm.auto": {
-      // Agents that do proactive domain audits (not all 39 — core squad only)
-      const auditSquad = [
-        { agentId: "security-agent",   zone: "Проаудируй все API эндпоинты: кто использует SupabaseAdmin/service role key там где должен быть user JWT. Проверь Railway env vars — нет ли лишних открытых секретов. Проверь CORS настройки gateway. Найди всё что может стать уязвимостью." },
-        { agentId: "architecture-agent", zone: "Проаудируй связь gateway↔офис↔v0Laura. Найди: мёртвый код, неоптимальные конфиги, проблемы в Dockerfile.gateway, что может сломаться при масштабировании. Проверь что swarm.auto и swarm.run работают корректно." },
-        { agentId: "product-agent",    zone: "Проаудируй UX офиса с точки зрения пользователя. Что непонятно при первом открытии? Что создаёт трение при общении с агентами? Что обещает интерфейс но не даёт? Конкретные экраны и компоненты." },
-      ];
-
-      const runId = `auto-${Date.now()}`;
-      sendEvent({ type: "event", event: "swarm", payload: { state: "auto_started", agents: auditSquad.map(a => a.agentId), runId } });
-
-      const results = await Promise.all(auditSquad.map(async ({ agentId, zone }) => {
-        const agent = agents.get(agentId);
-        if (!agent) return { agentId, error: "not found" };
-
-        sendEvent({ type: "event", event: "swarm", payload: { state: "agent_started", agentName: agent.name, runId } });
-
-        const sessionKey = `auto:${agentId}:${runId}`;
-        const prompt = `АВТОНОМНЫЙ АУДИТ — CEO не доступен, работаешь самостоятельно.\n\nТвоя зона: ${zone}\n\nЧто сделать:\n1. Найди все проблемы в своей зоне (конкретно: файл, строка, поведение)\n2. Для каждой проблемы — предложи готовое решение\n3. Расставь приоритеты P0/P1/P2\n4. Если проблема требует деплоя — опиши точно что менять, CEO задеплоит\n\nНе останавливайся на "всё хорошо" — копай глубже. Нет идеального кода.`;
-
-        try {
-          const reply = await callClaude(agent, sessionKey, prompt, () => {}, sessionKey);
-          const clean = visibleContent(reply) || reply;
-
-          // Save findings to disk
-          const findingsDir = path.join(__dirname, "..", "memory", "agent-findings");
-          try {
-            fs.mkdirSync(findingsDir, { recursive: true });
-            const date = new Date().toISOString().slice(0, 10);
-            fs.writeFileSync(
-              path.join(findingsDir, `${date}-${agentId}.md`),
-              `# Автономный аудит: ${agent.name}\n**Дата:** ${date}\n\n${clean}`
-            );
-          } catch { /* disk write failed, non-fatal */ }
-
-          sendEvent({ type: "event", event: "swarm", payload: { state: "agent_done", agentName: agent.name, runId } });
-          return { agentId, agent: agent.name, result: clean };
-        } catch (e) {
-          return { agentId, agent: agent.name, error: e.message };
-        }
-      }));
-
-      sendEvent({ type: "event", event: "swarm", payload: { state: "done", results } });
-      return resOk(id, { tasks: tasks.map(t => t.id), results });
+      resOk(id, { status: "started" }); // respond immediately, work runs async
+      runAutoAudit(sendEvent).catch(e => console.error("[swarm.auto] error:", e.message));
+      return null; // already sent response above
     }
 
     // ─── Swarm coordinator — run task across multiple agents, synthesize ────────
@@ -1008,6 +1038,167 @@ async function handleMethod(method, params, id, sendEvent) {
   }
 }
 
+// ─── Full audit squad with domain-specific tasks ──────────────────────────────
+const AUDIT_SQUAD = [
+  { agentId: "security-agent",         task: "Полный аудит безопасности: server/zeus-gateway-adapter.js, все API эндпоинты. Найди service role key вместо user JWT, открытые CORS, незащищённые WS подключения. P0 проблемы — с готовым кодом фикса." },
+  { agentId: "architecture-agent",     task: "Аудит: gateway↔офис↔v0Laura связи. Найди узкие места при 100 concurrent users, мёртвый код, проблемы в Dockerfile.gateway. Конкретные файлы и строки." },
+  { agentId: "product-agent",          task: "Аудит UX офиса: что пользователь видит при первом открытии, что создаёт трение при общении с агентами. Конкретные экраны и компоненты с предложениями." },
+  { agentId: "needs-agent",            task: "Топ-5 незакрытых потребностей команды прямо сейчас. Конкретно: что блокирует запуск, что замедляет работу, чего не хватает." },
+  { agentId: "qa-engineer",            task: "Аудит: найди все места без error handling, без таймаутов, без валидации данных. Особенно WebSocket обработчики и AI вызовы в gateway." },
+  { agentId: "growth-agent",           task: "Аудит friction points: путь от открытия офиса до первого полезного ответа агента. Где пользователь застрянет? Конкретные метрики которых не хватает." },
+  { agentId: "risk-manager",           task: "Топ-5 рисков (технических + бизнесовых) прямо сейчас. Для каждого — конкретный mitigation план с шагами." },
+  { agentId: "readiness-manager",      task: "Чеклист готовности к показу первым пользователям: что готово, что нет, что критично." },
+  { agentId: "behavioral-nudge-engine",task: "Аудит cognitive load в UI: сколько решений на экране, есть ли clear CTA. Конкретные компоненты которые перегружают." },
+  { agentId: "analytics-retention-agent", task: "Какие события нужно трекать в офисе? Конкретный план: event name, properties, trigger point." },
+  { agentId: "devops-sre-agent",       task: "Аудит инфры: Railway конфиги, Dockerfile.gateway, pm2 ecosystem. Single points of failure, отсутствующие healthchecks." },
+  { agentId: "performance-engineer-agent", task: "Профилируй callClaude: где время тратится, что можно кэшировать, как уменьшить latency на 30%." },
+  { agentId: "ux-research-agent",      task: "5 вещей которые запутают нового пользователя в первые 30 секунд. Конкретные решения для каждой." },
+  { agentId: "accessibility-auditor",  task: "WCAG 2.1 AA аудит офиса: keyboard nav, aria labels, contrast. Конкретные нарушения с файлами и строками." },
+  { agentId: "cultural-intelligence-strategist", task: "Аудит всех текстов в интерфейсе — корпоративный тон, неправильный язык для AZ/RU. Конкретные строки для замены." },
+  { agentId: "technical-writer-agent", task: "Проверь ZEUS-SETUP.md — что устарело, что неточно, что добавить для onboarding нового разработчика." },
+  { agentId: "data-engineer-agent",    task: "Как сейчас хранится история разговоров? Что теряется при рестарте? Предложи конкретное решение." },
+  { agentId: "financial-analyst-agent",task: "Расчёт: стоимость 1 агентского запроса на NVIDIA NIM vs Gemma4 local. Где можно сэкономить 30%+ без потери качества?" },
+  { agentId: "ceo-report-agent",       task: "Executive summary текущего состояния ZEUS: что работает, топ-3 приоритета на неделю. 1 страница." },
+  { agentId: "trend-scout-agent",      task: "Топ-3 тренда в AI agents (апрель 2026). Что из этого применимо к ZEUS прямо сейчас?" },
+];
+
+// ─── Core autonomous audit loop — runs on cron or manual trigger ──────────────
+async function runAutoAudit(sendEvent = () => {}) {
+  const runId = `auto-${Date.now()}`;
+  const date = new Date().toISOString().slice(0, 10);
+  const findingsDir = path.join(__dirname, "..", "memory", "agent-findings");
+  fs.mkdirSync(findingsDir, { recursive: true });
+
+  console.log(`[swarm.auto] Starting autonomous audit — ${AUDIT_SQUAD.length} agents, runId=${runId}`);
+  sendEvent({ type: "event", event: "swarm", payload: {
+    state: "auto_started", agents: AUDIT_SQUAD.map(a => a.agentId), runId
+  }});
+
+  // Read kanban so agents know current state
+  let kanbanSnapshot = "";
+  try { kanbanSnapshot = fs.readFileSync(path.join(__dirname, "..", "memory", "cto-kanban.md"), "utf8"); } catch {}
+
+  // Run agents in batches — Gemma4 can handle ~4 parallel requests without choking
+  const BATCH_SIZE = parseInt(process.env.AUTO_RUN_BATCH_SIZE || "4", 10);
+  const allResults = [];
+  for (let i = 0; i < AUDIT_SQUAD.length; i += BATCH_SIZE) {
+    const batch = AUDIT_SQUAD.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(batch.map(async ({ agentId, task }) => {
+    const agent = agents.get(agentId);
+    if (!agent) return { agentId, error: "agent not found" };
+
+    sendEvent({ type: "event", event: "swarm", payload: { state: "agent_started", agentName: agent.name, runId } });
+
+    const sessionKey = `auto:${agentId}:${runId}`;
+    const prompt = `АВТОНОМНЫЙ АУДИТ — ${new Date().toISOString()}
+CEO не доступен. Работай самостоятельно по своей зоне.
+
+ЗАДАЧА: ${task}
+
+Правила:
+- Конкретно: файл, строка, поведение — не общие слова
+- Для каждой проблемы — готовое решение (код/конфиг/команда)
+- Приоритеты: P0 (сломано прямо сейчас) / P1 (блокирует рост) / P2 (улучшение)
+- "Всё хорошо" — провал. Всегда есть что улучшить. Копай глубже.
+- Если нужен файл которого нет — назови его явно`;
+
+    try {
+      const reply = await callClaude(agent, sessionKey, prompt, () => {}, runId);
+      const clean = (visibleContent(reply) || reply).trim();
+      const isRealFinding = clean && clean.length > 80 && !clean.startsWith("[");
+      if (isRealFinding) {
+        fs.writeFileSync(
+          path.join(findingsDir, `${date}-${agentId}.md`),
+          `# ${agent.name} — автономный аудит\n**Дата:** ${date}\n**runId:** ${runId}\n\n${clean}`
+        );
+      }
+      sendEvent({ type: "event", event: "swarm", payload: { state: "agent_done", agentName: agent.name, runId } });
+      return { agentId, name: agent.name, result: clean };
+    } catch (e) {
+      console.warn(`[swarm.auto] ${agentId} failed: ${e.message}`);
+      return { agentId, name: agent.name, error: e.message };
+    }
+    }));
+    allResults.push(...batchResults);
+    if (i + BATCH_SIZE < AUDIT_SQUAD.length) {
+      await new Promise(r => setTimeout(r, 2000)); // 2s between batches
+    }
+  }
+  const results = allResults;
+
+  // ── Synthesis — update shared brain ──────────────────────────────────────────
+  // Only count real findings — filter out error messages and empty results
+  const successful = results.filter(r =>
+    r.result &&
+    r.result.length > 80 &&
+    !r.result.startsWith("[All providers failed") &&
+    !r.result.startsWith("[")
+  );
+  console.log(`[swarm.auto] ${successful.length}/${results.length} agents delivered findings. Running synthesis...`);
+
+  if (successful.length > 0) {
+    const synthAgent = agents.get("swarm-synthesizer") || { id: "swarm-synthesizer", name: "Swarm Synthesizer", role: "synthesis" };
+    const findingsDump = successful.map(r => `## ${r.name}\n${r.result.slice(0, 1500)}`).join("\n\n---\n\n");
+
+    const synthPrompt = `Дата: ${date}. Ты только что получил результаты автономного аудита от ${successful.length} агентов.
+
+${findingsDump}
+
+---
+
+Сделай три вещи:
+
+1. **ОБЩИЙ МОЗГ** — напиши обновлённый session-context.md. Коротко: что работает, что сломано, топ-приоритеты, что изменилось с прошлого запуска. Не пересказывай всё — только суть.
+
+2. **КАНБАН ОБНОВЛЕНИЕ** — перечисли новые задачи которые нашли агенты. Формат: "| Z-XX | Задача | Агент | P0/P1/P2 |". Только реальные новые проблемы.
+
+3. **CEO BRIEFING** — 5 предложений для CEO: что критично прямо сейчас, что сделали агенты, что нужно решение CEO.
+
+Без воды. Без повторов. Конкретно.`;
+
+    try {
+      const synthReply = await callClaude(
+        { ...synthAgent, id: "swarm-synthesizer" },
+        `${runId}:synthesis`,
+        synthPrompt,
+        (frame) => {
+          if (frame.payload?.state === "delta" || frame.payload?.state === "final") {
+            sendEvent({ ...frame, payload: { ...frame.payload, runId, agentId: "swarm-synthesizer", agentName: "Synthesis" } });
+          }
+        },
+        `${runId}-synthesis`
+      );
+      const synthClean = (visibleContent(synthReply) || synthReply).trim();
+
+      // Write synthesis back to shared context so next run starts smarter
+      if (synthClean && synthClean.length > 100) {
+        const ctxPath = path.join(__dirname, "..", "memory", "session-context.md");
+        const header = `# ZEUS Team Context — auto-updated ${date}\n*Generated by swarm-synthesizer after autonomous audit of ${successful.length} agents*\n\n`;
+        try { fs.writeFileSync(ctxPath, header + synthClean); } catch {}
+
+        // Also save synthesis as a finding
+        fs.writeFileSync(
+          path.join(findingsDir, `${date}-synthesis.md`),
+          `# Swarm Synthesis — ${date}\n**runId:** ${runId}\n**Agents:** ${successful.length}/${results.length}\n\n${synthClean}`
+        );
+        console.log(`[swarm.auto] Synthesis written to session-context.md`);
+      }
+
+      sendEvent({ type: "event", event: "swarm", payload: {
+        state: "done", results, synthesis: synthClean,
+        stats: { total: results.length, succeeded: successful.length, failed: results.length - successful.length }
+      }});
+    } catch (e) {
+      console.warn(`[swarm.auto] synthesis failed: ${e.message}`);
+      sendEvent({ type: "event", event: "swarm", payload: { state: "done", results } });
+    }
+  } else {
+    sendEvent({ type: "event", event: "swarm", payload: { state: "done", results } });
+  }
+
+  console.log(`[swarm.auto] Complete. Findings: memory/agent-findings/`);
+}
+
 // ─── Server bootstrap ──────────────────────────────────────────────────────────
 function startAdapter() {
   loadAgentState();
@@ -1126,6 +1317,23 @@ function startAdapter() {
     const aiMode = anthropic ? `Claude Haiku ✅` : NVIDIA_API_KEY ? `NVIDIA NIM ✅ (primary)` : OLLAMA_URL ? `Ollama ✅ (local)` : "⚠️ no AI configured";
     console.log(`[zeus-gateway] AI: ${aiMode}`);
     console.log(`[zeus-gateway] MindShift context: ${MINDSHIFT}`);
+
+    // ── Autonomous cron — agents work 24/7 without CEO ───────────────────────
+    const AUTO_RUN_INTERVAL_MS = parseInt(process.env.AUTO_RUN_INTERVAL_MS || "7200000", 10); // 2h default
+    if (AUTO_RUN_INTERVAL_MS > 0) {
+      // First run: 3 minutes after startup (let server warm up)
+      const firstRunDelay = parseInt(process.env.AUTO_RUN_FIRST_DELAY_MS || "180000", 10);
+      setTimeout(() => {
+        console.log(`[swarm.auto] First autonomous audit starting...`);
+        runAutoAudit().catch(e => console.error("[swarm.auto] cron error:", e.message));
+        // Then every AUTO_RUN_INTERVAL_MS
+        setInterval(() => {
+          console.log(`[swarm.auto] Scheduled autonomous audit starting...`);
+          runAutoAudit().catch(e => console.error("[swarm.auto] cron error:", e.message));
+        }, AUTO_RUN_INTERVAL_MS);
+      }, firstRunDelay);
+      console.log(`[zeus-gateway] Autonomous cron: first run in ${firstRunDelay/60000}min, then every ${AUTO_RUN_INTERVAL_MS/3600000}h`);
+    }
   });
 }
 
