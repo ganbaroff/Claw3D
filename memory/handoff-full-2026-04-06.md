@@ -2,6 +2,25 @@
 *Дата: 2026-04-06. Написан вместе с architecture-agent и swarm-synthesizer.*
 *Этот документ содержит ВСЁ что обсуждалось и было сделано за последние две сессии.*
 
+## ⚡ ПЕРВЫМ ДЕЛОМ — Прочитай Конституцию
+
+```bash
+cd C:/Projects/VOLAURA
+git fetch origin
+git show origin/claude/blissful-lichterman:docs/ECOSYSTEM-CONSTITUTION.md
+```
+
+**`docs/ECOSYSTEM-CONSTITUTION.md`** (PR ganbaroff/volaura#12) — главный документ всей экосистемы:
+- 5 Foundation Laws (NEVER RED, Energy Adaptation, Shame-Free Language, Animation Safety, One Primary Action)
+- 7 Crystal Economy Laws
+- Research #12: ZEUS model routing table (authoritative)
+- Research #13: Persistent memory architecture
+- Part 4: Product-specific rules для Life Simulator + claw3d, ZEUS
+- 37-item ADHD Design Checklist
+- Все 5 продуктов: VOLAURA · MindShift · Life Simulator · BrandedBy · ZEUS
+
+Конституция имеет приоритет над всем остальным. Если что-то в коде противоречит ей — код меняется.
+
 ---
 
 ## Кто ты в новом чате
@@ -163,6 +182,16 @@ error      → #ef4444  быстрый ring + "❌ error"
 
 #### `src/features/retro-office/RetroOffice3D.tsx`
 `AgentObjectModel` получает `officeState` prop.
+
+---
+
+## ⚠️ Важно: два слоя агентов
+
+Конституция уточняет: агентов **два типа**:
+- **39 Node.js агентов** — в `claw3d-fork/server/zeus-gateway-adapter.js`
+- **44 Python swarm агентов** — в `C:/Projects/VOLAURA/packages/swarm/`
+
+Оба слоя подключены к ZEUS Gateway. Node.js агенты отвечают на chat.send. Python swarm — отдельный координатор.
 
 ---
 
