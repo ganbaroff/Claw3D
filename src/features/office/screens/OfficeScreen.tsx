@@ -11,7 +11,7 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { MessageSquare, ChevronDown, Mic } from "lucide-react";
 import { RetroOffice3D } from "@/features/retro-office/RetroOffice3D";
-import type { OfficeAgent } from "@/features/retro-office/core/types";
+import type { OfficeAgent, OfficeAgentState } from "@/features/retro-office/core/types";
 import { RunningAvatarLoader } from "@/features/agents/components/RunningAvatarLoader";
 import { GatewayConnectScreen } from "@/features/agents/components/GatewayConnectScreen";
 import { useAgentStore, type AgentState } from "@/features/agents/state/store";
@@ -508,6 +508,21 @@ const getDeterministicItem = (id: string) => {
   return ITEMS[Math.abs(hash) % ITEMS.length];
 };
 
+// Life Simulator: derive the 10-state model from AgentState fields
+const deriveOfficeState = (agent: AgentState): OfficeAgentState => {
+  if (agent.status === "error") return "error";
+  if (agent.awaitingUserInput) return "waiting";
+  if (agent.status === "running" || Boolean(agent.runId)) {
+    // Agent is thinking deeply → focused
+    if (agent.thinkingTrace && agent.thinkingTrace.length > 20) return "focused";
+    return "working";
+  }
+  // Idle — check recency of last activity
+  const RECENT_MS = 5 * 60 * 1000; // 5 min
+  if (agent.lastActivityAt && Date.now() - agent.lastActivityAt < RECENT_MS) return "focused";
+  return "idle";
+};
+
 const mapAgentToOffice = (agent: AgentState): OfficeAgent => {
   if (agent.status === "error") {
     return {
@@ -518,6 +533,7 @@ const mapAgentToOffice = (agent: AgentState): OfficeAgent => {
       color: stringToColor(agent.agentId),
       item: getDeterministicItem(agent.agentId),
       avatarProfile: agent.avatarProfile ?? null,
+      officeState: "error",
     };
   }
   const isWorking = agent.status === "running" || Boolean(agent.runId);
@@ -529,6 +545,7 @@ const mapAgentToOffice = (agent: AgentState): OfficeAgent => {
     color: stringToColor(agent.agentId),
     item: getDeterministicItem(agent.agentId),
     avatarProfile: agent.avatarProfile ?? null,
+    officeState: deriveOfficeState(agent),
   };
 };
 

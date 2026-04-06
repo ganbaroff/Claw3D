@@ -1,6 +1,19 @@
 import type { AgentAvatarProfile } from "@/lib/avatars/profile";
 import type { OfficeInteractionTargetId } from "@/lib/office/places";
 
+// Life Simulator: 10-state model from agent-state-model-spec.md
+export type OfficeAgentState =
+  | "idle"       // no task, available
+  | "focused"    // deep work, recently active
+  | "working"    // actively processing
+  | "waiting"    // awaiting user input / approval
+  | "blocked"    // dependency unresolved
+  | "overloaded" // too many tasks
+  | "recovering" // after error or overload
+  | "degraded"   // partial functionality, slow
+  | "meeting"    // in standup / group session
+  | "error";     // critical failure
+
 export type OfficeAgent = {
   id: string;
   name: string;
@@ -9,6 +22,7 @@ export type OfficeAgent = {
   color: string;
   item: string;
   avatarProfile?: AgentAvatarProfile | null;
+  officeState?: OfficeAgentState | null;
 };
 
 export type JanitorTool = "broom" | "vacuum" | "floor_scrubber";
