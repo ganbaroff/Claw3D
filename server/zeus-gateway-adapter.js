@@ -57,6 +57,157 @@ const NIM = {
   synthesis:     "nvidia/llama-3.1-nemotron-ultra-253b-v1",
 };
 
+// ─── User memory system ───────────────────────────────────────────────────────
+//
+// Each user gets memory/users/{userId}.md
+// Agents read it before answering (lightweight — max 800 chars injected).
+// Agents update it after answering (async — never blocks response).
+// Max file size: 4KB. Older observations rotate out automatically.
+//
+const USER_MEMORY_DIR = path.join(__dirname, "..", "memory", "users");
+const USER_MEMORY_MAX_BYTES = 4096;
+
+function getUserMemoryPath(userId) {
+  // Sanitize userId — only alphanum, dash, underscore
+  const safe = (userId || "anonymous").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+  return path.join(USER_MEMORY_DIR, `${safe}.md`);
+}
+
+function readUserMemory(userId) {
+  try {
+    const content = fs.readFileSync(getUserMemoryPath(userId), "utf8");
+    return content.slice(0, USER_MEMORY_MAX_BYTES); // inject at most 800 chars
+  } catch { return null; }
+}
+
+function writeUserMemory(userId, content) {
+  try {
+    fs.mkdirSync(USER_MEMORY_DIR, { recursive: true });
+    // Rotate: keep last 3KB if file too large
+    let existing = "";
+    try { existing = fs.readFileSync(getUserMemoryPath(userId), "utf8"); } catch {}
+    const combined = content;
+    const trimmed = combined.length > USER_MEMORY_MAX_BYTES
+      ? combined.slice(-USER_MEMORY_MAX_BYTES)
+      : combined;
+    fs.writeFileSync(getUserMemoryPath(userId), trimmed);
+  } catch {}
+}
+
+// Extract userId from sessionKey (format: "main:agentId:userId" or just "sessionKey")
+function userIdFromSession(sessionKey) {
+  const parts = (sessionKey || "").split(":");
+  return parts.length >= 3 ? parts[2] : parts[0] || "anonymous";
+}
+
+// Inject user memory into prompt (small — max 800 chars)
+function injectUserMemory(userId, prompt) {
+  const mem = readUserMemory(userId);
+  if (!mem || mem.length < 20) return prompt;
+  return `# Что я знаю об этом пользователе\n\`\`\`\n${mem.slice(0, 800)}\n\`\`\`\n\n---\n\n${prompt}`;
+}
+
+// Update user memory after response — async, never blocks
+async function updateUserMemory(agent, userId, userMessage, agentReply) {
+  if (!userId || userId === "anonymous") return;
+  const existing = readUserMemory(userId) || "";
+  const now = new Date().toISOString().slice(0, 16);
+  const hour = new Date().getHours();
+
+  // Build observation prompt — tiny, cheap
+  const observePrompt = `Ты видишь короткий обмен с пользователем. Обнови его профиль — 3-5 строк, только новое что узнал.
+
+Текущий профиль:
+\`\`\`
+${existing.slice(0, 600)}
+\`\`\`
+
+Сообщение пользователя: "${userMessage.slice(0, 300)}"
+Твой ответ был о: "${agentReply.slice(0, 200)}"
+Время: ${hour}:00
+
+Напиши ТОЛЬКО обновлённый профиль. Формат:
+## Паттерны общения
+- (коротко, конкретно)
+## Что знает / умеет
+- (домен, уровень)
+## Предпочтения
+- (стиль ответов, что раздражает, что нравится)
+## Активность
+- Час: ${hour} | Агент: ${agent.id}
+
+Не пересказывай разговор. Только наблюдения о человеке.`;
+
+  try {
+    // Use cheapest/fastest model for memory updates — llama3.1-8b on Cerebras
+    const resp = await fetch(`${CEREBRAS_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${CEREBRAS_API_KEY}` },
+      body: JSON.stringify({
+        model: CEREBRAS_MODELS.small,
+        messages: [{ role: "user", content: observePrompt }],
+        max_completion_tokens: 300,
+        temperature: 0.3,
+        stream: false,
+      }),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const updated = data.choices?.[0]?.message?.content?.trim();
+    if (updated && updated.length > 30) {
+      writeUserMemory(userId, `# Профиль пользователя\n*Обновлено: ${now} агентом ${agent.id}*\n\n${updated}`);
+    }
+  } catch { /* memory update is best-effort */ }
+}
+
+// ─── Debriefer — writes session summary after each conversation ───────────────
+async function debriefSession(agentId, sessionKey, userId, history) {
+  if (history.length < 4) return; // not worth debriefing short chats
+  const debriefDir = path.join(__dirname, "..", "memory", "debriefs");
+  const date = new Date().toISOString().slice(0, 10);
+  const debriefPath = path.join(debriefDir, `${date}-${sessionKey.replace(/[:/]/g, "-")}.md`);
+
+  // Don't re-debrief same session
+  try { if (fs.existsSync(debriefPath)) return; } catch {}
+
+  const transcript = history.slice(-10).map(m => `${m.role}: ${m.content.slice(0, 300)}`).join("\n");
+
+  try {
+    const resp = await fetch(`${CEREBRAS_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${CEREBRAS_API_KEY}` },
+      body: JSON.stringify({
+        model: CEREBRAS_MODELS.small,
+        messages: [{ role: "user", content: `Сессия с агентом ${agentId}. Напиши дебриф в 5 строк:\n1. Что решили\n2. Что сделали\n3. Что осталось открытым\n4. Что нужно CEO\n5. Следующий шаг\n\nТранскрипт:\n${transcript}` }],
+        max_completion_tokens: 250,
+        temperature: 0.2,
+        stream: false,
+      }),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const debrief = data.choices?.[0]?.message?.content?.trim();
+    if (debrief && debrief.length > 30) {
+      fs.mkdirSync(debriefDir, { recursive: true });
+      fs.writeFileSync(debriefPath, `# Дебриф сессии: ${sessionKey}\n**Агент:** ${agentId}\n**Дата:** ${date}\n**Пользователь:** ${userId}\n\n${debrief}`);
+    }
+  } catch {}
+}
+
+// ─── Drift detector — notices when decisions contradict past ones ─────────────
+function checkContextAge(agentId) {
+  // Returns warning string if shared context hasn't been updated in 7+ days
+  const ctxPath = path.join(__dirname, "..", "memory", "session-context.md");
+  try {
+    const stat = fs.statSync(ctxPath);
+    const ageDays = (Date.now() - stat.mtimeMs) / (1000 * 60 * 60 * 24);
+    if (ageDays > 7) {
+      return `⚠️ Мой контекст о проекте не обновлялся ${Math.floor(ageDays)} дней. Некоторые мои знания могут быть устаревшими. Если что-то противоречит реальности — скажи, я обновлюсь.`;
+    }
+  } catch {}
+  return null;
+}
+
 // ─── Event-driven agent system ────────────────────────────────────────────────
 //
 // Agents wake on real events from Railway, GitHub, Sentry.
@@ -517,6 +668,22 @@ function buildUserPrompt(agentId, contextFiles, userMessage) {
     }
   }
 
+  // Recent debriefs — drift detection: agent sees recent decisions, can flag contradictions
+  try {
+    const debriefDir = path.join(__dirname, "..", "memory", "debriefs");
+    const files = fs.readdirSync(debriefDir)
+      .filter(f => f.endsWith(".md"))
+      .sort().slice(-3); // last 3 debriefs
+    if (files.length > 0) {
+      const recent = files.map(f => {
+        try { return fs.readFileSync(path.join(debriefDir, f), "utf8").slice(0, 400); } catch { return ""; }
+      }).filter(Boolean).join("\n\n---\n\n");
+      if (recent) {
+        context += `# Последние решения команды (проверь на противоречия)\n\`\`\`\n${recent}\n\`\`\`\nЕсли текущая задача противоречит этим решениям — скажи об этом явно.\n\n`;
+      }
+    }
+  } catch { /* no debriefs yet */ }
+
   if (!context) return userMessage;
   return context + `---\n\n# Task\n\n${userMessage}`;
 }
@@ -658,10 +825,20 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
   // Load file context (cached)
   const contextFiles = getCachedContextFiles(sessionKey, agent.id);
   const systemPrompt = buildSystemPrompt(agent);
-  const userPrompt = buildUserPrompt(agent.id, contextFiles, userMessage);
+
+  // User memory — inject what we know about this user (lightweight, max 800 chars)
+  const userId = userIdFromSession(sessionKey);
+  const basePrompt = buildUserPrompt(agent.id, contextFiles, userMessage);
+  const userPrompt = injectUserMemory(userId, basePrompt);
+
+  // Staleness warning — agent self-reports if context is old
+  const staleWarning = checkContextAge(agent.id);
 
   // Build conversation history for context
   const history = getHistory(sessionKey);
+  const finalSystemPrompt = staleWarning
+    ? `${systemPrompt}\n\n${staleWarning}`
+    : systemPrompt;
   const messages = [
     ...history.map((m) => ({ role: m.role, content: m.content })),
     { role: "user", content: userPrompt },
@@ -682,7 +859,7 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: ollamaModel,
-        messages: [{ role: "system", content: systemPrompt }, ...messages],
+        messages: [{ role: "system", content: finalSystemPrompt }, ...messages],
         stream: true,
         options: { num_predict: 1024, temperature: 0.5 },
       }),
@@ -719,7 +896,7 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
       },
       body: JSON.stringify({
         model,
-        messages: [{ role: "system", content: systemPrompt }, ...messages],
+        messages: [{ role: "system", content: finalSystemPrompt }, ...messages],
         max_tokens: 1024,
         temperature: 0.5,
         stream: true,
@@ -760,7 +937,7 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
       },
       body: JSON.stringify({
         model,
-        messages: [{ role: "system", content: systemPrompt }, ...messages],
+        messages: [{ role: "system", content: finalSystemPrompt }, ...messages],
         max_completion_tokens: 1024,
         temperature: 0.5,
         stream: true,
@@ -794,7 +971,7 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
   async function streamHaiku() {
     if (!anthropic) throw new Error("ANTHROPIC_API_KEY not set");
     const stream = anthropic.messages.stream({
-      model: CLAUDE_MODEL, max_tokens: 1024, system: systemPrompt, messages,
+      model: CLAUDE_MODEL, max_tokens: 1024, system: finalSystemPrompt, messages,
     });
     let buf = "";
     for await (const chunk of stream) {
@@ -840,6 +1017,18 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
   const cleanReply = visibleContent(fullReply) || fullReply;
   history.push({ role: "user", content: userMessage });
   history.push({ role: "assistant", content: cleanReply });
+
+  // Async post-response: update user memory + debrief (never block the response)
+  const isRealConversation = !sessionKey.startsWith("auto:") && !sessionKey.startsWith("event:");
+  if (isRealConversation && CEREBRAS_API_KEY && cleanReply.length > 50 && !cleanReply.startsWith("[")) {
+    setImmediate(() => {
+      updateUserMemory(agent, userId, userMessage, cleanReply).catch(() => {});
+      // Debrief after longer sessions (4+ turns)
+      if (history.length >= 8) {
+        debriefSession(agent.id, sessionKey, userId, history).catch(() => {});
+      }
+    });
+  }
 
   emitChat("final", { stopReason: "end_turn", message: { role: "assistant", content: cleanReply } });
   sendEvent({
