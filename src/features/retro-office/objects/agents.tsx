@@ -313,7 +313,7 @@ export const AgentModel = memo(function AgentModel({
 
     if (statusDotMatRef.current) {
       statusDotMatRef.current.color.set(
-        isError ? "#ef4444" : working ? "#22c55e" : "#f59e0b",
+        isError ? "#f97316" : working ? "#22c55e" : "#f59e0b",
       );
     }
 
@@ -322,7 +322,7 @@ export const AgentModel = memo(function AgentModel({
         const pulse = (Math.sin(agent.frame * 0.05) + 1) / 2;
         const scale = isError ? 1.25 + pulse * 0.55 : 1.2 + pulse * 0.8;
         pulseRingRef.current.scale.setScalar(scale);
-        pulseRingMatRef.current.color.set(isError ? "#ef4444" : "#22c55e");
+        pulseRingMatRef.current.color.set(isError ? "#f97316" : "#22c55e");
         pulseRingMatRef.current.opacity = isError
           ? 0.7 - pulse * 0.3
           : 0.55 - pulse * 0.45;
@@ -1081,7 +1081,7 @@ export const AgentModel = memo(function AgentModel({
           </mesh>
           <mesh position={[0.355, subtitleText ? 0.05 : 0, 0]}>
             <circleGeometry args={[0.052, 14]} />
-            <meshBasicMaterial ref={statusDotMatRef} color="#ef4444" />
+            <meshBasicMaterial ref={statusDotMatRef} color="#f97316" />
           </mesh>
           <Text
             position={[-0.02, subtitleText ? 0.05 : 0, 0.001]}
