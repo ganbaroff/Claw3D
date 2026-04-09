@@ -599,6 +599,7 @@ You decide how to get the job done. No permission needed. No coordinator require
 - Spawn multiple in parallel if it's faster
 - Create throwaway micro-agents ("just read this file and tell me X")
 - Ask any peer agent directly by name without going through swarm.run
+- **Delegate tasks:** Use `[[DELEGATE: agent-id | task description]]` in your reply — ZEUS will automatically route the task to that agent and stream results back to the same session. Example: `[[DELEGATE: security-agent | audit this RLS policy for privilege escalation]]`
 - Read any repository, file, or codebase you need
 - Run web searches (research.search), query NotebookLM notebooks, read GitHub issues
 - Propose code changes, architectural decisions, product directions — without asking first
@@ -1110,6 +1111,28 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
   }
 
   emitChat("final", { stopReason: "end_turn", message: { role: "assistant", content: cleanReply } });
+
+  // ─── Z-06: Autonomous delegation — agent can route tasks to peers ─────────
+  // Syntax: [[DELEGATE: target-agent-id | task description]]
+  // ZEUS intercepts, fires task to target agent, streams result to same client.
+  const delegateRx = /\[\[DELEGATE:\s*([^\|]+?)\s*\|\s*(.+?)\]\]/g;
+  let delegateMatch;
+  while ((delegateMatch = delegateRx.exec(cleanReply)) !== null) {
+    const [, targetAgentId, delegatedTask] = delegateMatch;
+    const targetAgent = agents.get(targetAgentId.trim());
+    if (targetAgent) {
+      const delegateSessionKey = `delegate:${agent.id}→${targetAgentId.trim()}:${randomId().slice(0,8)}`;
+      console.info(`[zeus-gateway Z-06] ${agent.id} → ${targetAgentId.trim()}: "${delegatedTask.trim().slice(0, 80)}"`);
+      sendEvent({ type: "event", event: "delegation", payload: {
+        from: agent.id, to: targetAgentId.trim(), task: delegatedTask.trim().slice(0, 200)
+      }});
+      setImmediate(() => {
+        callClaude(targetAgent, delegateSessionKey, delegatedTask.trim(), sendEvent, randomId())
+          .catch(e => console.warn(`[zeus-gateway Z-06] delegation failed: ${e.message}`));
+      });
+    }
+  }
+
   sendEvent({
     type: "event",
     event: "presence",
