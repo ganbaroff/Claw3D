@@ -17,8 +17,8 @@
 |---|--------|-------|--------|
 | Z-02 | RemoteAgentChatPanel — ответы не отражаются в облаке | architecture-agent | Не начато |
 | Z-03 | Life Sim / Ready Player Me аватары в claw3d | product-agent | Не начато |
-| Z-05 | Agent memory per-session | architecture-agent | Не начато |
-| Z-06 | Autonomous coordinator mode | architecture-agent | Не начато |
+| Z-02 | RemoteAgentChatPanel — ответы не отражаются в облаке | architecture-agent | Не начато |
+| Z-03 | Life Sim / Ready Player Me аватары в claw3d | product-agent | Не начато |
 
 ---
 
@@ -35,6 +35,8 @@
 
 | Задача | Дата |
 |--------|------|
+| Z-05: per-session memory — disk-persisted (memory/session-history/) | 2026-04-10 |
+| Z-06: autonomous coordinator — [[DELEGATE: agent-id | task]] syntax | 2026-04-10 |
 | Z-04: zeus-gateway задеплоен на Railway | 2026-04-06 |
 | Z-04: wss://zeus-gateway-production.up.railway.app — живой | 2026-04-06 |
 | Z-01: swarm.run coordinator + синтез Nemotron 253B | 2026-04-06 |
