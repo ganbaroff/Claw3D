@@ -599,7 +599,7 @@ You decide how to get the job done. No permission needed. No coordinator require
 - Spawn multiple in parallel if it's faster
 - Create throwaway micro-agents ("just read this file and tell me X")
 - Ask any peer agent directly by name without going through swarm.run
-- **Delegate tasks:** Use `[[DELEGATE: agent-id | task description]]` in your reply — ZEUS will automatically route the task to that agent and stream results back to the same session. Example: `[[DELEGATE: security-agent | audit this RLS policy for privilege escalation]]`
+- **Delegate tasks:** Use \`[[DELEGATE: agent-id | task description]]\` in your reply — ZEUS will automatically route the task to that agent and stream results back to the same session. Example: \`[[DELEGATE: security-agent | audit this RLS policy for privilege escalation]]\`
 - Read any repository, file, or codebase you need
 - Run web searches (research.search), query NotebookLM notebooks, read GitHub issues
 - Propose code changes, architectural decisions, product directions — without asking first
@@ -1871,6 +1871,20 @@ function startAdapter() {
       if (typeof id !== "string" || typeof method !== "string") return;
 
       if (method === "connect") {
+        // Token auth — accept GATEWAY_SECRET or omit entirely for local 127.0.0.1 dev
+        const clientToken = params?.token;
+        const isLocal = httpServer.address()?.address === "127.0.0.1";
+        if (clientToken && clientToken !== GATEWAY_SECRET) {
+          send(resErr(id, "unauthorized", "Invalid token."));
+          ws.close(4001, "unauthorized");
+          return;
+        }
+        // If no token provided and server is exposed publicly, reject
+        if (!clientToken && !isLocal) {
+          send(resErr(id, "unauthorized", "Token required."));
+          ws.close(4001, "unauthorized");
+          return;
+        }
         connected = true;
         send({
           type: "res", id, ok: true,
