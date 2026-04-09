@@ -6,6 +6,7 @@ const path = require("path");
 const { randomUUID, createHmac, timingSafeEqual } = require("crypto");
 const { WebSocketServer } = require("ws");
 const Anthropic = require("@anthropic-ai/sdk");
+const { webSearch, researchBeforeTask, pickTopResearchQuestions } = require("./research-module");
 
 // PORT is set by Railway/Heroku/etc; ZEUS_ADAPTER_PORT for local override; 18789 default
 const ADAPTER_PORT = parseInt(process.env.PORT || process.env.ZEUS_ADAPTER_PORT || "18789", 10);
@@ -588,6 +589,30 @@ What you don't do:
 - Go outside your domain without flagging it
 - Pretend to be neutral when you have a clear opinion
 - Follow MindShift's own rules: no red color, ADHD-safe copy, no shame mechanics — non-negotiable
+
+## Sub-agent authority (you are a senior — you can hire)
+
+You have authority to spawn sub-agents when it speeds up your work:
+- **Research sub-agent**: ask coordinator (swarm.run) to run research.before for your topic while you do something else
+- **Specialist sub-agent**: if you need deeper domain knowledge, ask coordinator to call the right specialist agent
+- **NotebookLM**: use "notebooklm ask" CLI to query curated research notebooks before answering (ADHD, quality, competitive, swarm, payments, retention)
+- **Web search**: use "research.search" command via coordinator for current external data
+
+Notebooks available (use by ID):
+- e8fe6264 — MindShift ADHD App Research
+- 8507f90b — ADHD Color Psychology & UI
+- 78c393a0 — App Retention & Onboarding Patterns
+- 19efdc5d — ADHD Psychotypes & Personalization
+- 6b8c2269 — ZEUS + AI Swarm Product
+- 888d43e4 — Quality System (Toyota+Apple+DORA)
+- a76be380 — Competitive Landscape
+- fad04e49 — Payment Processor Research
+
+Rules for sub-agents:
+1. Constitution applies to everything you spawn — NEVER RED, shame-free, etc.
+2. Sub-agents cannot deploy to production — only propose
+3. Research findings must be cited — no inventing from sub-agent results
+4. Coordinate via swarm.run — don't spawn parallel chaos
 
 You're here to help Yusif build something real. Act like it.`;
 }
@@ -1294,6 +1319,35 @@ async function handleMethod(method, params, id, sendEvent) {
       return null; // already sent response above
     }
 
+    // ─── Web search — single query, returns results ──────────────────────────
+    case "research.search": {
+      const query = typeof p.query === "string" ? p.query.trim() : "";
+      if (!query) return resErr(id, "bad_request", "query is required");
+      try {
+        const results = await webSearch(query, p.maxResults || 3);
+        sendResult(id, { query, results });
+      } catch (err) {
+        return resErr(id, "search_error", err.message);
+      }
+      break;
+    }
+
+    // ─── Research-first — agents research their domain before a task ─────────
+    case "research.before": {
+      const task = typeof p.task === "string" ? p.task.trim() : "";
+      if (!task) return resErr(id, "bad_request", "task is required");
+      const agentIds = Array.isArray(p.agents) ? p.agents : ["product-agent", "architecture-agent", "security-agent"];
+      try {
+        sendEvent({ type: "event", event: "research", seq: 0, payload: { state: "started", agents: agentIds, task: task.slice(0, 200) } });
+        const context = await researchBeforeTask(task, agentIds);
+        sendEvent({ type: "event", event: "research", seq: 1, payload: { state: "done", length: context.length } });
+        sendResult(id, { context, agents: agentIds, task });
+      } catch (err) {
+        return resErr(id, "research_error", err.message);
+      }
+      break;
+    }
+
     // ─── Swarm coordinator — run task across multiple agents, synthesize ────────
     case "swarm.run": {
       const task = typeof p.task === "string" ? p.task.trim() : "";
@@ -1301,6 +1355,7 @@ async function handleMethod(method, params, id, sendEvent) {
 
       const requestedAgents = Array.isArray(p.agents) ? p.agents.filter(a => agents.has(a)) : [];
       const synthesize = p.synthesize !== false; // default true
+      const doResearch = p.research === true; // opt-in research-first phase
       const runId = typeof p.idempotencyKey === "string" && p.idempotencyKey ? p.idempotencyKey : randomId();
 
       // Auto-select agents by task keywords if none specified
@@ -1334,6 +1389,27 @@ async function handleMethod(method, params, id, sendEvent) {
         const results = [];
         let seq = 1;
 
+        // ── Research-first phase (optional) ────────────────────────────────
+        let researchContext = "";
+        if (doResearch) {
+          sendEvent({ type: "event", event: "swarm", seq: seq++, payload: {
+            runId, state: "researching", agents: agentIds
+          }});
+          try {
+            researchContext = await researchBeforeTask(task, agentIds);
+            sendEvent({ type: "event", event: "swarm", seq: seq++, payload: {
+              runId, state: "research_done", contextLength: researchContext.length
+            }});
+          } catch (err) {
+            console.warn(`[zeus] research phase failed: ${err.message} — continuing without`);
+          }
+        }
+
+        // Build task prompt (with research context if available)
+        const taskPrompt = researchContext
+          ? `${researchContext}\n\n---\n\nTask:\n${task}`
+          : task;
+
         // Run agents in parallel
         await Promise.all(agentIds.map(async (agentId) => {
           const agent = agents.get(agentId);
@@ -1345,7 +1421,7 @@ async function handleMethod(method, params, id, sendEvent) {
           }});
 
           try {
-            const reply = await callClaude(agent, agentSessionKey, task, (frame) => {
+            const reply = await callClaude(agent, agentSessionKey, taskPrompt, (frame) => {
               // Forward agent deltas tagged with agentId
               if (frame.payload?.state === "delta" || frame.payload?.state === "final") {
                 sendEvent({ ...frame, payload: { ...frame.payload, runId, agentId, agentName: agent.name } });
