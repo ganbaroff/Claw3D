@@ -824,14 +824,53 @@ const conversationHistory = new Map();
 const activeRuns = new Map();
 // activeSendEventFns defined above in event-driven section
 
+// ─── Z-05: Per-session persistent memory ─────────────────────────────────────
+// Conversation history survives server restarts via disk-backed JSON.
+// Max 40 messages kept per session (20 turns) — prevents unbounded growth.
+// Files: memory/session-history/{sanitized-sessionKey}.json
+const SESSION_HISTORY_DIR = path.join(__dirname, "..", "memory", "session-history");
+const MAX_HISTORY_MESSAGES = 40;
+
+function sessionHistoryPath(sessionKey) {
+  const safe = sessionKey.replace(/[:/\\?*"|<>]/g, "-");
+  return path.join(SESSION_HISTORY_DIR, `${safe}.json`);
+}
+
+function loadHistoryFromDisk(sessionKey) {
+  try {
+    const p = sessionHistoryPath(sessionKey);
+    if (fs.existsSync(p)) {
+      const raw = fs.readFileSync(p, "utf8");
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    }
+  } catch {}
+  return [];
+}
+
+function saveHistoryToDisk(sessionKey, messages) {
+  try {
+    fs.mkdirSync(SESSION_HISTORY_DIR, { recursive: true });
+    const trimmed = messages.slice(-MAX_HISTORY_MESSAGES);
+    fs.writeFileSync(sessionHistoryPath(sessionKey), JSON.stringify(trimmed, null, 2));
+  } catch {}
+}
+
 function randomId() { return randomUUID().replace(/-/g, ""); }
 function sessionKeyFor(agentId) { return `agent:${agentId}:${MAIN_KEY}`; }
 
 function getHistory(sessionKey) {
-  if (!conversationHistory.has(sessionKey)) conversationHistory.set(sessionKey, []);
+  if (!conversationHistory.has(sessionKey)) {
+    // Z-05: restore from disk if available
+    const persisted = loadHistoryFromDisk(sessionKey);
+    conversationHistory.set(sessionKey, persisted);
+  }
   return conversationHistory.get(sessionKey);
 }
-function clearHistory(sessionKey) { conversationHistory.delete(sessionKey); }
+function clearHistory(sessionKey) {
+  conversationHistory.delete(sessionKey);
+  try { fs.unlinkSync(sessionHistoryPath(sessionKey)); } catch {}
+}
 function resOk(id, payload) { return { type: "res", id, ok: true, payload: payload ?? {} }; }
 function resErr(id, code, message) { return { type: "res", id, ok: false, error: { code, message } }; }
 
@@ -1055,6 +1094,8 @@ async function callClaude(agent, sessionKey, userMessage, sendEvent, runId) {
   const cleanReply = visibleContent(fullReply) || fullReply;
   history.push({ role: "user", content: userMessage });
   history.push({ role: "assistant", content: cleanReply });
+  // Z-05: persist history to disk so it survives server restarts
+  setImmediate(() => saveHistoryToDisk(sessionKey, history));
 
   // Async post-response: update user memory + debrief (never block the response)
   const isRealConversation = !sessionKey.startsWith("auto:") && !sessionKey.startsWith("event:");
@@ -1257,6 +1298,8 @@ async function handleMethod(method, params, id, sendEvent) {
               const history = getHistory(sessionKey);
               history.push({ role: "user", content: message });
               history.push({ role: "assistant", content: reply });
+              // Z-05: persist to disk (best-effort, async)
+              setImmediate(() => saveHistoryToDisk(sessionKey, history));
               emitChat("final", { stopReason: "end_turn", message: { role: "assistant", content: reply } });
               sendEvent({ type: "event", event: "presence", seq: seq++, payload: { sessions: { recent: [{ key: sessionKey, updatedAt: Date.now() }], byAgent: [{ agentId, recent: [{ key: sessionKey, updatedAt: Date.now() }] }] } } });
             } else {
